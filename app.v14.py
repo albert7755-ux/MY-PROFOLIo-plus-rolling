@@ -6,13 +6,12 @@ from scipy.optimize import minimize
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
-import matplotlib.pyplot as plt
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (AI配置年度回測版)')
+st.title('📈 智能投資組合優化器 (年度回測終極版)')
 st.markdown("""
-此工具提供華爾街等級的投資組合分析，專注於 **AI 演算法配置回測**、**融資模擬** 與 **年度績效檢視**。
+此工具會自動計算最佳權重，並回測該權重在過去每一年的真實報酬率。
 """)
 
 # --- 2. 參數設定 ---
@@ -132,22 +131,19 @@ if st.sidebar.button('開始計算'):
                     df_bench_combined = pd.DataFrame(normalized_bench)
                     df_bench_combined.columns = [f"基準({bench_input})"]
 
-                # 統計數據
+                # 3. 計算統計數據
                 returns = df_close.pct_change().dropna()
                 cov_matrix = returns.cov() * 252
                 mean_returns = returns.mean() * 252
                 corr_matrix = returns.corr()
                 normalized_prices = df_close / df_close.iloc[0]
                 
-                # 優化器設定
                 num_assets = len(tickers)
                 constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
                 bounds = tuple((0, 1) for _ in range(num_assets))
                 init_guess = [1/num_assets] * num_assets
 
-                # --------------------------
-                # 計算函數
-                # --------------------------
+                # 4. 定義共用函數
                 def calculate_mdd(series):
                     roll_max = series.cummax()
                     drawdown = (series - roll_max) / roll_max
@@ -163,34 +159,51 @@ if st.sidebar.button('開始計算'):
                     margin_equity = position_value - debt - interest_cost
                     return margin_equity
 
-                st.success("運算完成！")
+                # ==========================
+                # B. 計算兩個策略 (但先不顯示，為了存變數)
+                # ==========================
+                
+                # --- 1. 最小風險 (Min Risk) ---
+                def min_variance(weights, cov_matrix):
+                    return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+                
+                res_min = minimize(min_variance, init_guess, args=(cov_matrix,), 
+                                   method='SLSQP', bounds=bounds, constraints=constraints)
+                w_min = res_min.x
+                
+                # 計算淨值曲線
+                raw_port_val_min = (normalized_prices * w_min).sum(axis=1)
+                margin_port_val_min = calculate_margin_equity(raw_port_val_min, leverage, loan_ratio, margin_rate)
+                margin_port_val_min.name = "🛡️ 最小風險組合"
+
+                # --- 2. 最大夏普 (Max Sharpe) ---
+                def neg_sharpe_ratio(weights, mean_returns, cov_matrix, rf):
+                    p_ret = np.sum(mean_returns * weights)
+                    p_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+                    return - (p_ret - rf) / p_vol
+                
+                args = (mean_returns, cov_matrix, risk_free_rate)
+                res_sharpe = minimize(neg_sharpe_ratio, init_guess, args=args,
+                                      method='SLSQP', bounds=bounds, constraints=constraints)
+                w_sharpe = res_sharpe.x
+                
+                # 計算淨值曲線
+                raw_port_val_sharpe = (normalized_prices * w_sharpe).sum(axis=1)
+                margin_port_val_sharpe = calculate_margin_equity(raw_port_val_sharpe, leverage, loan_ratio, margin_rate)
+                margin_port_val_sharpe.name = "🚀 最大夏普組合"
+
+                st.success("AI 運算完成！")
 
                 # ==========================
-                # B. 分頁顯示策略
+                # C. 分頁顯示 (圖表與細節)
                 # ==========================
                 tab1, tab2 = st.tabs(["🛡️ 最小風險組合 (保守)", "🚀 最大夏普組合 (積極)"])
 
-                # --- Tab 1: 最小風險 ---
                 with tab1:
-                    st.subheader("🛡️ 最小風險組合 (GMV)")
-                    if use_margin:
-                        st.caption(f"⚠️ **融資模式**：槓桿 {leverage:.1f} 倍 | 年利率 {margin_rate:.1%}")
-
-                    def min_variance(weights, cov_matrix):
-                        return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-                    
-                    res_min = minimize(min_variance, init_guess, args=(cov_matrix,), 
-                                       method='SLSQP', bounds=bounds, constraints=constraints)
-                    w_min = res_min.x
-                    
-                    # 計算淨值
-                    raw_port_val = (normalized_prices * w_min).sum(axis=1)
-                    margin_port_val = calculate_margin_equity(raw_port_val, leverage, loan_ratio, margin_rate)
-                    margin_port_val.name = "🛡️ 最小風險"
-
-                    # 顯示配置
+                    st.subheader("🛡️ 最小風險組合")
                     col1_1, col1_2 = st.columns([1, 2])
                     with col1_1:
+                        # 顯示權重
                         clean_w = [round(w, 4) if w > 0.0001 else 0.0 for w in w_min]
                         df_min = pd.DataFrame({'標的': tickers, '配置': clean_w})
                         df_min['顯示權重'] = df_min['配置'].apply(lambda x: f"{x:.1%}")
@@ -202,48 +215,25 @@ if st.sidebar.button('開始計算'):
                         st.plotly_chart(fig_pie, use_container_width=True)
 
                     with col1_2:
-                        # 繪圖
-                        fig = px.line(margin_port_val, title='資產成長回測')
-                        fig.update_traces(line=dict(color='green', width=3), name='🛡️ 最小風險')
+                        fig = px.line(margin_port_val_min, title='資產成長回測')
+                        fig.update_traces(line=dict(color='green', width=3))
                         if normalized_bench is not None:
-                             aligned_bench = normalized_bench.reindex(margin_port_val.index).ffill()
+                             aligned_bench = normalized_bench.reindex(margin_port_val_min.index).ffill()
                              if aligned_bench.iloc[0] > 0: aligned_bench = aligned_bench / aligned_bench.iloc[0]
                              fig.add_trace(go.Scatter(x=aligned_bench.index, y=aligned_bench, mode='lines', name=f'基準 ({bench_input})', line=dict(color='gray', width=2, dash='dash')))
                         st.plotly_chart(fig, use_container_width=True)
                         
                         # 績效
-                        total_ret = margin_port_val.iloc[-1] - 1
-                        cagr = (margin_port_val.iloc[-1])**(1/years) - 1 if margin_port_val.iloc[-1] > 0 else -1
-                        mdd = calculate_mdd(margin_port_val)
-                        st.markdown("### 💰 回測結果")
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("總報酬率", f"{total_ret:.2%}")
-                        c2.metric("年化報酬", f"{cagr:.2%}")
-                        c3.metric("最大回撤", f"{mdd:.2%}", delta_color="inverse")
+                        ret = margin_port_val_min.iloc[-1] - 1
+                        cagr = (margin_port_val_min.iloc[-1])**(1/years) - 1 if margin_port_val_min.iloc[-1] > 0 else -1
+                        st.metric("總報酬率", f"{ret:.2%}")
+                        st.metric("年化報酬", f"{cagr:.2%}")
 
-                # --- Tab 2: 最大夏普 ---
                 with tab2:
-                    st.subheader("🚀 最大夏普組合 (Max Sharpe)")
-                    if use_margin:
-                        st.caption(f"⚠️ **融資模式**：槓桿 {leverage:.1f} 倍 | 年利率 {margin_rate:.1%}")
-
-                    def neg_sharpe_ratio(weights, mean_returns, cov_matrix, rf):
-                        p_ret = np.sum(mean_returns * weights)
-                        p_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-                        return - (p_ret - rf) / p_vol
-                    
-                    args = (mean_returns, cov_matrix, risk_free_rate)
-                    res_sharpe = minimize(neg_sharpe_ratio, init_guess, args=args,
-                                          method='SLSQP', bounds=bounds, constraints=constraints)
-                    w_sharpe = res_sharpe.x
-
-                    # 計算淨值
-                    raw_port_val_s = (normalized_prices * w_sharpe).sum(axis=1)
-                    margin_port_val_s = calculate_margin_equity(raw_port_val_s, leverage, loan_ratio, margin_rate)
-                    margin_port_val_s.name = "🚀 最大夏普"
-
+                    st.subheader("🚀 最大夏普組合")
                     col2_1, col2_2 = st.columns([1, 2])
                     with col2_1:
+                        # 顯示權重
                         clean_w_s = [round(w, 4) if w > 0.0001 else 0.0 for w in w_sharpe]
                         df_sharpe = pd.DataFrame({'標的': tickers, '配置': clean_w_s})
                         df_sharpe['顯示權重'] = df_sharpe['配置'].apply(lambda x: f"{x:.1%}")
@@ -255,32 +245,28 @@ if st.sidebar.button('開始計算'):
                         st.plotly_chart(fig_pie_s, use_container_width=True)
 
                     with col2_2:
-                        fig_s = px.line(margin_port_val_s, title='資產成長回測')
-                        fig_s.update_traces(line=dict(color='red', width=3), name='🚀 最大夏普')
+                        fig_s = px.line(margin_port_val_sharpe, title='資產成長回測')
+                        fig_s.update_traces(line=dict(color='red', width=3))
                         if normalized_bench is not None:
-                             aligned_bench = normalized_bench.reindex(margin_port_val_s.index).ffill()
+                             aligned_bench = normalized_bench.reindex(margin_port_val_sharpe.index).ffill()
                              if aligned_bench.iloc[0] > 0: aligned_bench = aligned_bench / aligned_bench.iloc[0]
                              fig_s.add_trace(go.Scatter(x=aligned_bench.index, y=aligned_bench, mode='lines', name=f'基準 ({bench_input})', line=dict(color='gray', width=2, dash='dash')))
                         st.plotly_chart(fig_s, use_container_width=True)
                         
-                        total_ret_s = margin_port_val_s.iloc[-1] - 1
-                        cagr_s = (margin_port_val_s.iloc[-1])**(1/years) - 1 if margin_port_val_s.iloc[-1] > 0 else -1
-                        mdd_s = calculate_mdd(margin_port_val_s)
-                        st.markdown("### 💰 回測結果")
-                        cs1, cs2, cs3 = st.columns(3)
-                        cs1.metric("總報酬率", f"{total_ret_s:.2%}")
-                        cs2.metric("年化報酬", f"{cagr_s:.2%}")
-                        cs3.metric("最大回撤", f"{mdd_s:.2%}", delta_color="inverse")
+                        ret_s = margin_port_val_sharpe.iloc[-1] - 1
+                        cagr_s = (margin_port_val_sharpe.iloc[-1])**(1/years) - 1 if margin_port_val_sharpe.iloc[-1] > 0 else -1
+                        st.metric("總報酬率", f"{ret_s:.2%}")
+                        st.metric("年化報酬", f"{cagr_s:.2%}")
 
                 # ==========================
-                # C. 年度報酬率 (AI 配置 PK)
+                # D. 各年度報酬率回測 (重點！)
                 # ==========================
                 st.markdown("---")
                 st.subheader("📅 各年度報酬率回測 (Annual Returns)")
                 
-                # 準備數據：系統算出來的兩組策略 + Benchmark
-                df_min_risk_col = margin_port_val.to_frame(name="🛡️ 最小風險組合")
-                df_max_sharpe_col = margin_port_val_s.to_frame(name="🚀 最大夏普組合")
+                # 準備數據：系統算出來的兩組策略 (轉成 DataFrame)
+                df_min_risk_col = margin_port_val_min.to_frame(name="🛡️ 最小風險組合")
+                df_max_sharpe_col = margin_port_val_sharpe.to_frame(name="🚀 最大夏普組合")
                 
                 # 收集所有數據 (個股 + 兩組AI策略 + Benchmark)
                 data_list = [df_close, df_min_risk_col, df_max_sharpe_col]
@@ -292,10 +278,11 @@ if st.sidebar.button('開始計算'):
                 if df_all_assets.index.tz is not None:
                     df_all_assets.index = df_all_assets.index.tz_localize(None)
 
-                # 計算年度報酬
+                # 計算年度報酬 (使用 Y 代表年底)
                 annual_prices = df_all_assets.resample('Y').last()
                 annual_returns = annual_prices.pct_change().dropna()
                 
+                # 格式整理
                 annual_returns.index = annual_returns.index.year
                 annual_returns = annual_returns.sort_index(ascending=False)
                 
@@ -305,35 +292,7 @@ if st.sidebar.button('開始計算'):
                     .background_gradient(cmap='RdYlGn', vmin=-0.3, vmax=0.3)
                     .apply(lambda x: ['background-color: #e6f3ff' if '組合' in x.name else '' for i in x], axis=0) 
                 )
-                st.caption("註：藍色底色欄位為系統優化後的投資組合 (若開啟融資，已包含槓桿效果)。")
-
-                # 滾動報酬
-                with st.expander("📊 個股滾動報酬與勝率分析", expanded=False):
-                    rolling_periods = {'3個月': 63, '6個月': 126, '1年': 252, '3年': 756, '5年': 1260, '10年': 2520}
-                    rolling_data = []
-                    for ticker in tickers:
-                        row = {'標的': ticker}
-                        for name, window in rolling_periods.items():
-                            if len(df_close) > window:
-                                roll_ret = df_close[ticker].pct_change(window).dropna()
-                                win_rate = (roll_ret > 0).mean()
-                                row[name] = win_rate
-                            else: row[name] = np.nan 
-                        time_to_100 = "> 10 年"
-                        for y in range(1, 11):
-                            window = y * 252
-                            if len(df_close) > window:
-                                min_ret = df_close[ticker].pct_change(window).min()
-                                if min_ret > 0:
-                                    time_to_100 = f"{y} 年"
-                                    break
-                        row['必勝持有期'] = time_to_100
-                        rolling_data.append(row)
-                    df_roll = pd.DataFrame(rolling_data)
-                    st.dataframe(df_roll.style.format({
-                        '3個月': '{:.0%}', '6個月': '{:.0%}', '1年': '{:.0%}', 
-                        '3年': '{:.0%}', '5年': '{:.0%}', '10年': '{:.0%}'
-                    }).background_gradient(subset=list(rolling_periods.keys()), cmap='RdYlGn', vmin=0, vmax=1))
+                st.caption("註：表格中的「組合」欄位，即為上方系統計算出最佳權重後，回推至各年度的真實表現。")
 
             except Exception as e:
                 st.error(f"發生錯誤：{str(e)}")
