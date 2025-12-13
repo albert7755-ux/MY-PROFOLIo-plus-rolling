@@ -9,9 +9,9 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (年度回測分流版)')
+st.title('📈 智能投資組合優化器 (滾動勝率整合版)')
 st.markdown("""
-此工具會自動計算最佳權重，並回測該權重在過去每一年的真實報酬率。
+此工具會自動計算最佳權重，並回測該權重在過去每一年的真實報酬率與滾動持有勝率。
 """)
 
 # --- 2. 參數設定 ---
@@ -50,7 +50,7 @@ if st.sidebar.button('開始計算'):
     if len(user_tickers) < 2:
         st.error("請至少輸入兩檔標的。")
     else:
-        with st.spinner('正在進行 AI 運算與年度回測...'):
+        with st.spinner('正在進行 AI 運算與多維度回測...'):
             try:
                 # ==========================
                 # A. 數據準備
@@ -168,7 +168,7 @@ if st.sidebar.button('開始計算'):
                     return margin_equity
 
                 # ==========================
-                # B. ★ 先進行所有策略計算
+                # B. 策略計算
                 # ==========================
                 
                 # --- 1. 最小風險 (Min Risk) ---
@@ -178,7 +178,6 @@ if st.sidebar.button('開始計算'):
                 res_min = minimize(min_variance, init_guess, args=(cov_matrix,), 
                                    method='SLSQP', bounds=bounds, constraints=constraints)
                 w_min = res_min.x
-                
                 raw_port_val_min = (normalized_prices * w_min).sum(axis=1)
                 margin_port_val_min = calculate_margin_equity(raw_port_val_min, leverage, loan_ratio, margin_rate)
                 margin_port_val_min.name = "🛡️ 最小風險組合"
@@ -193,7 +192,6 @@ if st.sidebar.button('開始計算'):
                 res_sharpe = minimize(neg_sharpe_ratio, init_guess, args=args,
                                       method='SLSQP', bounds=bounds, constraints=constraints)
                 w_sharpe = res_sharpe.x
-                
                 raw_port_val_sharpe = (normalized_prices * w_sharpe).sum(axis=1)
                 margin_port_val_sharpe = calculate_margin_equity(raw_port_val_sharpe, leverage, loan_ratio, margin_rate)
                 margin_port_val_sharpe.name = "🚀 最大夏普組合"
@@ -201,36 +199,85 @@ if st.sidebar.button('開始計算'):
                 st.success("AI 運算完成！")
 
                 # ==========================
-                # C. 定義年度報酬顯示函數 (分流顯示的核心)
+                # C. 定義顯示函數 (年度報酬 & 滾動勝率)
                 # ==========================
+                
+                # 1. 年度報酬表
                 def display_annual_returns(portfolio_series, portfolio_name):
                     st.markdown(f"#### 📅 {portfolio_name} - 年度報酬回測")
-                    
-                    # 1. 準備該策略的 DataFrame
                     df_port = portfolio_series.to_frame(name=portfolio_name)
-                    
-                    # 2. 合併數據：個股 + Benchmark + 該策略
                     data_list = [df_close, df_port]
                     if df_bench_combined is not None:
                         data_list.append(df_bench_combined)
                     
                     df_all = pd.concat(data_list, axis=1)
-                    if df_all.index.tz is not None:
-                         df_all.index = df_all.index.tz_localize(None)
+                    if df_all.index.tz is not None: df_all.index = df_all.index.tz_localize(None)
                     
-                    # 3. 計算年報酬
                     ann_prices = df_all.resample('Y').last()
                     ann_ret = ann_prices.pct_change().dropna()
-                    
                     ann_ret.index = ann_ret.index.year
                     ann_ret = ann_ret.sort_index(ascending=False)
                     
-                    # 4. 顯示表格 (只用 Heatmap，不加底色以免字看不到)
                     st.dataframe(
                         ann_ret.style.format("{:.2%}")
                         .background_gradient(cmap='RdYlGn', vmin=-0.3, vmax=0.3)
                     )
                     st.caption("註：深綠色代表大賺 (>30%)，深紅色代表大賠 (<-30%)。")
+
+                # 2. ★ 滾動勝率分析表 (新增功能)
+                def display_rolling_analysis(portfolio_series, portfolio_name):
+                    st.markdown(f"#### 📊 {portfolio_name} - 滾動持有勝率分析 (Win Rate)")
+                    st.caption("此表顯示：在不同持有期間下，**「正報酬 (不賠錢)」** 的機率。")
+
+                    rolling_periods = {'3個月': 63, '6個月': 126, '1年': 252, '3年': 756, '5年': 1260, '10年': 2520}
+                    rolling_rows = []
+
+                    # 輔助函數：算單一序列的滾動數據
+                    def get_rolling_stats(series, name):
+                        row = {'標的': name}
+                        for period_name, window in rolling_periods.items():
+                            if len(series) > window:
+                                roll_ret = series.pct_change(window).dropna()
+                                win_rate = (roll_ret > 0).mean()
+                                row[period_name] = win_rate
+                            else:
+                                row[period_name] = np.nan
+                        
+                        # 計算必勝期
+                        time_to_100 = "> 10 年"
+                        for y in range(1, 11):
+                            window = y * 252
+                            if len(series) > window:
+                                min_ret = series.pct_change(window).min()
+                                if min_ret > 0:
+                                    time_to_100 = f"{y} 年"
+                                    break
+                        row['必勝持有期'] = time_to_100
+                        return row
+
+                    # 1. 加入投資組合 (排第一)
+                    rolling_rows.append(get_rolling_stats(portfolio_series, f"🏆 {portfolio_name}"))
+
+                    # 2. 加入 Benchmark (排第二)
+                    if normalized_bench is not None:
+                         # 注意 Benchmark 可能有空值，需處理
+                         bench_clean = normalized_bench.dropna()
+                         rolling_rows.append(get_rolling_stats(bench_clean, f"⚖️ 基準({bench_input})"))
+
+                    # 3. 加入個股
+                    for ticker in tickers:
+                        rolling_rows.append(get_rolling_stats(df_close[ticker], ticker))
+
+                    df_roll = pd.DataFrame(rolling_rows)
+                    
+                    # 顯示
+                    st.dataframe(
+                        df_roll.style.format({
+                            '3個月': '{:.0%}', '6個月': '{:.0%}', '1年': '{:.0%}', 
+                            '3年': '{:.0%}', '5年': '{:.0%}', '10年': '{:.0%}'
+                        })
+                        .background_gradient(subset=list(rolling_periods.keys()), cmap='RdYlGn', vmin=0, vmax=1)
+                    )
 
                 # ==========================
                 # D. 分頁顯示
@@ -270,8 +317,9 @@ if st.sidebar.button('開始計算'):
                         c3.metric("最大回撤", f"{mdd:.2%}", delta_color="inverse")
                     
                     st.divider()
-                    # ★ 在此分頁只顯示「最小風險」的年度表
                     display_annual_returns(margin_port_val_min, "🛡️ 最小風險組合")
+                    st.divider()
+                    display_rolling_analysis(margin_port_val_min, "🛡️ 最小風險組合")
 
                 with tab2:
                     st.subheader("🚀 最大夏普組合")
@@ -306,39 +354,9 @@ if st.sidebar.button('開始計算'):
                         cs3.metric("最大回撤", f"{mdd_s:.2%}", delta_color="inverse")
                     
                     st.divider()
-                    # ★ 在此分頁只顯示「最大夏普」的年度表
                     display_annual_returns(margin_port_val_sharpe, "🚀 最大夏普組合")
-
-                # ==========================
-                # E. 滾動報酬 (這個放最下面大家都看得到)
-                # ==========================
-                st.markdown("---")
-                with st.expander("📊 個股滾動報酬與勝率分析", expanded=False):
-                    rolling_periods = {'3個月': 63, '6個月': 126, '1年': 252, '3年': 756, '5年': 1260, '10年': 2520}
-                    rolling_data = []
-                    for ticker in tickers:
-                        row = {'標的': ticker}
-                        for name, window in rolling_periods.items():
-                            if len(df_close) > window:
-                                roll_ret = df_close[ticker].pct_change(window).dropna()
-                                win_rate = (roll_ret > 0).mean()
-                                row[name] = win_rate
-                            else: row[name] = np.nan 
-                        time_to_100 = "> 10 年"
-                        for y in range(1, 11):
-                            window = y * 252
-                            if len(df_close) > window:
-                                min_ret = df_close[ticker].pct_change(window).min()
-                                if min_ret > 0:
-                                    time_to_100 = f"{y} 年"
-                                    break
-                        row['必勝持有期'] = time_to_100
-                        rolling_data.append(row)
-                    df_roll = pd.DataFrame(rolling_data)
-                    st.dataframe(df_roll.style.format({
-                        '3個月': '{:.0%}', '6個月': '{:.0%}', '1年': '{:.0%}', 
-                        '3年': '{:.0%}', '5年': '{:.0%}', '10年': '{:.0%}'
-                    }).background_gradient(subset=list(rolling_periods.keys()), cmap='RdYlGn', vmin=0, vmax=1))
+                    st.divider()
+                    display_rolling_analysis(margin_port_val_sharpe, "🚀 最大夏普組合")
 
             except Exception as e:
                 st.error(f"發生錯誤：{str(e)}")
