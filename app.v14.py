@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (滾動勝率整合版)')
+st.title('📈 智能投資組合優化器 (滾動勝率精簡版)')
 st.markdown("""
 此工具會自動計算最佳權重，並回測該權重在過去每一年的真實報酬率與滾動持有勝率。
 """)
@@ -23,7 +23,7 @@ st.sidebar.header('2. 基準指數 (Benchmark)')
 bench_input = st.sidebar.text_input(
     '基準代號與權重 (格式: 代號:%)', 
     'SPY:60 AGG:40', 
-    help="用於比較的市場基準。"
+    help="用於比較的市場基準 (僅用於年度報酬比較與走勢圖)。"
 )
 
 years = st.sidebar.slider('回測年數', 1, 20, 10)
@@ -199,10 +199,10 @@ if st.sidebar.button('開始計算'):
                 st.success("AI 運算完成！")
 
                 # ==========================
-                # C. 定義顯示函數 (年度報酬 & 滾動勝率)
+                # C. 定義顯示函數
                 # ==========================
                 
-                # 1. 年度報酬表
+                # 1. 年度報酬表 (保留 Benchmark)
                 def display_annual_returns(portfolio_series, portfolio_name):
                     st.markdown(f"#### 📅 {portfolio_name} - 年度報酬回測")
                     df_port = portfolio_series.to_frame(name=portfolio_name)
@@ -224,7 +224,7 @@ if st.sidebar.button('開始計算'):
                     )
                     st.caption("註：深綠色代表大賺 (>30%)，深紅色代表大賠 (<-30%)。")
 
-                # 2. ★ 滾動勝率分析表 (新增功能)
+                # 2. ★ 滾動勝率分析表 (移除 Benchmark)
                 def display_rolling_analysis(portfolio_series, portfolio_name):
                     st.markdown(f"#### 📊 {portfolio_name} - 滾動持有勝率分析 (Win Rate)")
                     st.caption("此表顯示：在不同持有期間下，**「正報酬 (不賠錢)」** 的機率。")
@@ -232,7 +232,7 @@ if st.sidebar.button('開始計算'):
                     rolling_periods = {'3個月': 63, '6個月': 126, '1年': 252, '3年': 756, '5年': 1260, '10年': 2520}
                     rolling_rows = []
 
-                    # 輔助函數：算單一序列的滾動數據
+                    # 輔助函數
                     def get_rolling_stats(series, name):
                         row = {'標的': name}
                         for period_name, window in rolling_periods.items():
@@ -243,7 +243,6 @@ if st.sidebar.button('開始計算'):
                             else:
                                 row[period_name] = np.nan
                         
-                        # 計算必勝期
                         time_to_100 = "> 10 年"
                         for y in range(1, 11):
                             window = y * 252
@@ -258,19 +257,14 @@ if st.sidebar.button('開始計算'):
                     # 1. 加入投資組合 (排第一)
                     rolling_rows.append(get_rolling_stats(portfolio_series, f"🏆 {portfolio_name}"))
 
-                    # 2. 加入 Benchmark (排第二)
-                    if normalized_bench is not None:
-                         # 注意 Benchmark 可能有空值，需處理
-                         bench_clean = normalized_bench.dropna()
-                         rolling_rows.append(get_rolling_stats(bench_clean, f"⚖️ 基準({bench_input})"))
+                    # (已移除) 這裡原本是加入 Benchmark 的程式碼
 
-                    # 3. 加入個股
+                    # 2. 加入個股
                     for ticker in tickers:
                         rolling_rows.append(get_rolling_stats(df_close[ticker], ticker))
 
                     df_roll = pd.DataFrame(rolling_rows)
                     
-                    # 顯示
                     st.dataframe(
                         df_roll.style.format({
                             '3個月': '{:.0%}', '6個月': '{:.0%}', '1年': '{:.0%}', 
@@ -367,5 +361,5 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.caption("⚠️ **免責聲明**")
 st.sidebar.caption("""
-本工具僅供市場分析與模擬參考，不構成任何投資建議或邀約。
+本工具市場分析與模擬參考，不構成任何投資建議或邀請約。歷史績效不代表未來收益保證。投資人應審慎評估風險，自負盈虧。
 """)
