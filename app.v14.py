@@ -180,7 +180,6 @@ if st.sidebar.button('開始計算'):
                     fig.update_traces(line=dict(color=color, width=3), name=strategy_name)
                     
                     if normalized_bench is not None:
-                        # ★ 修復點：使用 ffill() 替代 method='ffill'
                         aligned_bench = normalized_bench.reindex(port_val.index).ffill()
                         if aligned_bench.iloc[0] > 0:
                             aligned_bench = aligned_bench / aligned_bench.iloc[0]
@@ -318,8 +317,9 @@ if st.sidebar.button('開始計算'):
                             delta_msg_s = f"vs Benchmark: {total_ret_s - bench_total_ret:+.2%}"
 
                         st.markdown("### 💰 回測結果")
-                        cb1, cb2, cb3 = st.columns(3)
-                        cb1.metric("總報酬率", f"{total_ret_s:.2%}", delta=delta_msg_s, delta_color="normal")
+                        # ★ 修正點：這裡變數名稱統一使用 csb1, csb2, csb3
+                        csb1, csb2, csb3 = st.columns(3)
+                        csb1.metric("總報酬率", f"{total_ret_s:.2%}", delta=delta_msg_s, delta_color="normal")
                         csb2.metric("年化報酬", f"{cagr_s:.2%}")
                         csb3.metric("最大回撤", f"{mdd_s:.2%}", delta="注意風險", delta_color="inverse")
 
@@ -390,7 +390,7 @@ if st.sidebar.button('開始計算'):
 else:
     st.info("請在左側輸入股票代號並按下「開始計算」")
 
-# --- 側邊欄免責聲明 (這就是之前漏掉的部分) ---
+# --- 側邊欄免責聲明 ---
 st.sidebar.markdown("---")
 st.sidebar.caption("⚠️ **免責聲明**")
 st.sidebar.caption("""
