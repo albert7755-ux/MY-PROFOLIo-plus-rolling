@@ -10,9 +10,9 @@ import matplotlib.pyplot as plt
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (年度報酬分析版)')
+st.title('📈 智能投資組合優化器 (組合年度回測版)')
 st.markdown("""
-此工具提供華爾街等級的投資組合分析，包含 **風險控管**、**融資模擬**、**基準對照** 與 **年度績效回測**。
+此工具提供華爾街等級的投資組合分析，包含 **風險控管**、**融資模擬**、**基準對照** 與 **策略年度績效PK**。
 """)
 
 # --- 2. 參數設定 ---
@@ -317,7 +317,6 @@ if st.sidebar.button('開始計算'):
                             delta_msg_s = f"vs Benchmark: {total_ret_s - bench_total_ret:+.2%}"
 
                         st.markdown("### 💰 回測結果")
-                        # ★ 修正點：這裡變數名稱統一使用 csb1, csb2, csb3
                         csb1, csb2, csb3 = st.columns(3)
                         csb1.metric("總報酬率", f"{total_ret_s:.2%}", delta=delta_msg_s, delta_color="normal")
                         csb2.metric("年化報酬", f"{cagr_s:.2%}")
@@ -329,21 +328,29 @@ if st.sidebar.button('開始計算'):
                 st.markdown("---")
                 # 1. 年度報酬率
                 with st.expander("📅 各年度報酬率回測 (Annual Returns)", expanded=True):
-                    if df_bench_combined is not None:
-                        # Index 時區處理
-                        if df_close.index.tz is None and df_bench_combined.index.tz is not None:
-                             df_bench_combined.index = df_bench_combined.index.tz_localize(None)
-                        elif df_close.index.tz is not None and df_bench_combined.index.tz is None:
-                             df_close.index = df_close.index.tz_localize(None)
-                        
-                        df_all_assets = pd.concat([df_close, df_bench_combined], axis=1)
-                    else:
-                        df_all_assets = df_close
                     
+                    # 準備投資組合的淨值序列 (轉換為 DataFrame 以便合併)
+                    df_min_risk = margin_port_val.to_frame(name="🛡️ 最小風險")
+                    df_max_sharpe = margin_port_val_s.to_frame(name="🚀 最大夏普")
+
+                    # 收集所有要比較的數據
+                    # 注意：個股、策略、Benchmark 都放在這裡
+                    data_list = [df_close, df_min_risk, df_max_sharpe]
+                    if df_bench_combined is not None:
+                        data_list.append(df_bench_combined)
+                    
+                    # 合併成一張大表
+                    df_all_assets = pd.concat(data_list, axis=1)
+                    
+                    # 處理時區問題 (統一移除時區，避免報錯)
+                    if df_all_assets.index.tz is not None:
+                        df_all_assets.index = df_all_assets.index.tz_localize(None)
+
                     # 計算年度報酬 (使用 Y 代表年底)
                     annual_prices = df_all_assets.resample('Y').last()
                     annual_returns = annual_prices.pct_change().dropna()
                     
+                    # 調整顯示格式
                     annual_returns.index = annual_returns.index.year
                     annual_returns = annual_returns.sort_index(ascending=False)
                     
@@ -394,6 +401,7 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.caption("⚠️ **免責聲明**")
 st.sidebar.caption("""
+**本工具僅供內部教育訓練使用，請勿外流**
 本工具僅供市場分析與模擬參考，不構成任何投資建議或邀約。
 融資交易涉及高風險，可能導致損失超過原始本金。
 歷史績效不代表未來獲利保證。
