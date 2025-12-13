@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (年度回測終極版)')
+st.title('📈 智能投資組合優化器 (年度回測分流版)')
 st.markdown("""
 此工具會自動計算最佳權重，並回測該權重在過去每一年的真實報酬率。
 """)
@@ -72,7 +72,7 @@ if st.sidebar.button('開始計算'):
                     st.error("無法抓取投資組合數據。")
                     st.stop()
                 
-                # ★ 強制移除時區
+                # 強制移除時區
                 if df_close.index.tz is not None:
                     df_close.index = df_close.index.tz_localize(None)
 
@@ -114,7 +114,7 @@ if st.sidebar.button('開始計算'):
                 if isinstance(df_bench_raw, pd.Series):
                     df_bench_raw = df_bench_raw.to_frame(name=bench_tickers[0])
                 
-                # ★ Benchmark 強制移除時區
+                # Benchmark 強制移除時區
                 if df_bench_raw.index.tz is not None:
                     df_bench_raw.index = df_bench_raw.index.tz_localize(None)
 
@@ -201,7 +201,39 @@ if st.sidebar.button('開始計算'):
                 st.success("AI 運算完成！")
 
                 # ==========================
-                # C. 分頁顯示 (圖表與細節)
+                # C. 定義年度報酬顯示函數 (分流顯示的核心)
+                # ==========================
+                def display_annual_returns(portfolio_series, portfolio_name):
+                    st.markdown(f"#### 📅 {portfolio_name} - 年度報酬回測")
+                    
+                    # 1. 準備該策略的 DataFrame
+                    df_port = portfolio_series.to_frame(name=portfolio_name)
+                    
+                    # 2. 合併數據：個股 + Benchmark + 該策略
+                    data_list = [df_close, df_port]
+                    if df_bench_combined is not None:
+                        data_list.append(df_bench_combined)
+                    
+                    df_all = pd.concat(data_list, axis=1)
+                    if df_all.index.tz is not None:
+                         df_all.index = df_all.index.tz_localize(None)
+                    
+                    # 3. 計算年報酬
+                    ann_prices = df_all.resample('Y').last()
+                    ann_ret = ann_prices.pct_change().dropna()
+                    
+                    ann_ret.index = ann_ret.index.year
+                    ann_ret = ann_ret.sort_index(ascending=False)
+                    
+                    # 4. 顯示表格 (只用 Heatmap，不加底色以免字看不到)
+                    st.dataframe(
+                        ann_ret.style.format("{:.2%}")
+                        .background_gradient(cmap='RdYlGn', vmin=-0.3, vmax=0.3)
+                    )
+                    st.caption("註：深綠色代表大賺 (>30%)，深紅色代表大賠 (<-30%)。")
+
+                # ==========================
+                # D. 分頁顯示
                 # ==========================
                 tab1, tab2 = st.tabs(["🛡️ 最小風險組合 (保守)", "🚀 最大夏普組合 (積極)"])
 
@@ -228,7 +260,6 @@ if st.sidebar.button('開始計算'):
                              fig.add_trace(go.Scatter(x=aligned_bench.index, y=aligned_bench, mode='lines', name=f'基準 ({bench_input})', line=dict(color='gray', width=2, dash='dash')))
                         st.plotly_chart(fig, use_container_width=True)
                         
-                        # ★ 修正點：使用 total_ret 變數
                         total_ret = margin_port_val_min.iloc[-1] - 1
                         cagr = (margin_port_val_min.iloc[-1])**(1/years) - 1 if margin_port_val_min.iloc[-1] > 0 else -1
                         mdd = calculate_mdd(margin_port_val_min)
@@ -237,6 +268,10 @@ if st.sidebar.button('開始計算'):
                         c1.metric("總報酬率", f"{total_ret:.2%}")
                         c2.metric("年化報酬", f"{cagr:.2%}")
                         c3.metric("最大回撤", f"{mdd:.2%}", delta_color="inverse")
+                    
+                    st.divider()
+                    # ★ 在此分頁只顯示「最小風險」的年度表
+                    display_annual_returns(margin_port_val_min, "🛡️ 最小風險組合")
 
                 with tab2:
                     st.subheader("🚀 最大夏普組合")
@@ -261,7 +296,6 @@ if st.sidebar.button('開始計算'):
                              fig_s.add_trace(go.Scatter(x=aligned_bench.index, y=aligned_bench, mode='lines', name=f'基準 ({bench_input})', line=dict(color='gray', width=2, dash='dash')))
                         st.plotly_chart(fig_s, use_container_width=True)
                         
-                        # ★ 修正點：使用 total_ret_s 變數
                         total_ret_s = margin_port_val_sharpe.iloc[-1] - 1
                         cagr_s = (margin_port_val_sharpe.iloc[-1])**(1/years) - 1 if margin_port_val_sharpe.iloc[-1] > 0 else -1
                         mdd_s = calculate_mdd(margin_port_val_sharpe)
@@ -270,46 +304,15 @@ if st.sidebar.button('開始計算'):
                         cs1.metric("總報酬率", f"{total_ret_s:.2%}")
                         cs2.metric("年化報酬", f"{cagr_s:.2%}")
                         cs3.metric("最大回撤", f"{mdd_s:.2%}", delta_color="inverse")
+                    
+                    st.divider()
+                    # ★ 在此分頁只顯示「最大夏普」的年度表
+                    display_annual_returns(margin_port_val_sharpe, "🚀 最大夏普組合")
 
                 # ==========================
-                # D. 各年度報酬率回測 (絕對會顯示版)
+                # E. 滾動報酬 (這個放最下面大家都看得到)
                 # ==========================
                 st.markdown("---")
-                st.subheader("📅 各年度報酬率回測 (Annual Returns)")
-                
-                # 準備數據
-                df_min_risk_col = margin_port_val_min.to_frame(name="🛡️ 最小風險組合")
-                df_max_sharpe_col = margin_port_val_sharpe.to_frame(name="🚀 最大夏普組合")
-                
-                # 收集所有數據
-                data_list = [df_close, df_min_risk_col, df_max_sharpe_col]
-                if df_bench_combined is not None:
-                    data_list.append(df_bench_combined)
-                
-                # 合併
-                df_all_assets = pd.concat(data_list, axis=1)
-                
-                # 確保時區移除
-                if df_all_assets.index.tz is not None:
-                    df_all_assets.index = df_all_assets.index.tz_localize(None)
-
-                # 計算年度報酬
-                annual_prices = df_all_assets.resample('Y').last()
-                annual_returns = annual_prices.pct_change().dropna()
-                
-                # 格式整理
-                annual_returns.index = annual_returns.index.year
-                annual_returns = annual_returns.sort_index(ascending=False)
-                
-                # 顯示表格
-                st.dataframe(
-                    annual_returns.style.format("{:.2%}")
-                    .background_gradient(cmap='RdYlGn', vmin=-0.3, vmax=0.3)
-                    .apply(lambda x: ['background-color: #e6f3ff' if '組合' in x.name else '' for i in x], axis=0) 
-                )
-                st.caption("註：表格中的「組合」欄位，即為上方系統計算出最佳權重後，回推至各年度的真實表現。")
-
-                # 滾動報酬
                 with st.expander("📊 個股滾動報酬與勝率分析", expanded=False):
                     rolling_periods = {'3個月': 63, '6個月': 126, '1年': 252, '3年': 756, '5年': 1260, '10年': 2520}
                     rolling_data = []
