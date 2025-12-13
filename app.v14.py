@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (年度回測終極版)')
+st.title('📈 智能投資組合優化器 (年度回測修復版)')
 st.markdown("""
 此工具會自動計算最佳權重，並回測該權重在過去每一年的真實報酬率。
 """)
@@ -72,6 +72,10 @@ if st.sidebar.button('開始計算'):
                     st.error("無法抓取投資組合數據。")
                     st.stop()
                 
+                # ★ 強制移除時區 (關鍵修復：避免合併時對不齊)
+                if df_close.index.tz is not None:
+                    df_close.index = df_close.index.tz_localize(None)
+
                 tickers = df_close.columns.tolist()
 
                 # 2. 下載與合成 Benchmark
@@ -109,6 +113,10 @@ if st.sidebar.button('開始計算'):
                 
                 if isinstance(df_bench_raw, pd.Series):
                     df_bench_raw = df_bench_raw.to_frame(name=bench_tickers[0])
+                
+                # ★ Benchmark 也要強制移除時區
+                if df_bench_raw.index.tz is not None:
+                    df_bench_raw.index = df_bench_raw.index.tz_localize(None)
 
                 # 日期對齊
                 common_index = df_close.index.intersection(df_bench_raw.index)
@@ -160,7 +168,7 @@ if st.sidebar.button('開始計算'):
                     return margin_equity
 
                 # ==========================
-                # B. 計算兩個策略 (但先不顯示，為了存變數)
+                # B. ★ 先進行所有策略計算 (確保變數存在)
                 # ==========================
                 
                 # --- 1. 最小風險 (Min Risk) ---
@@ -226,8 +234,12 @@ if st.sidebar.button('開始計算'):
                         # 績效
                         ret = margin_port_val_min.iloc[-1] - 1
                         cagr = (margin_port_val_min.iloc[-1])**(1/years) - 1 if margin_port_val_min.iloc[-1] > 0 else -1
-                        st.metric("總報酬率", f"{ret:.2%}")
-                        st.metric("年化報酬", f"{cagr:.2%}")
+                        mdd = calculate_mdd(margin_port_val_min)
+                        st.markdown("### 💰 回測結果")
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("總報酬率", f"{total_ret:.2%}")
+                        c2.metric("年化報酬", f"{cagr:.2%}")
+                        c3.metric("最大回撤", f"{mdd:.2%}", delta_color="inverse")
 
                 with tab2:
                     st.subheader("🚀 最大夏普組合")
@@ -255,26 +267,33 @@ if st.sidebar.button('開始計算'):
                         
                         ret_s = margin_port_val_sharpe.iloc[-1] - 1
                         cagr_s = (margin_port_val_sharpe.iloc[-1])**(1/years) - 1 if margin_port_val_sharpe.iloc[-1] > 0 else -1
-                        st.metric("總報酬率", f"{ret_s:.2%}")
-                        st.metric("年化報酬", f"{cagr_s:.2%}")
+                        mdd_s = calculate_mdd(margin_port_val_sharpe)
+                        st.markdown("### 💰 回測結果")
+                        cs1, cs2, cs3 = st.columns(3)
+                        cs1.metric("總報酬率", f"{total_ret_s:.2%}")
+                        cs2.metric("年化報酬", f"{cagr_s:.2%}")
+                        cs3.metric("最大回撤", f"{mdd_s:.2%}", delta_color="inverse")
 
                 # ==========================
-                # D. 各年度報酬率回測 (重點！)
+                # D. 各年度報酬率回測 (絕對會顯示版)
                 # ==========================
                 st.markdown("---")
                 st.subheader("📅 各年度報酬率回測 (Annual Returns)")
                 
                 # 準備數據：系統算出來的兩組策略 (轉成 DataFrame)
+                # 這裡重新建立 Series 確保 Index 正確
                 df_min_risk_col = margin_port_val_min.to_frame(name="🛡️ 最小風險組合")
                 df_max_sharpe_col = margin_port_val_sharpe.to_frame(name="🚀 最大夏普組合")
                 
-                # 收集所有數據 (個股 + 兩組AI策略 + Benchmark)
+                # 收集所有數據
                 data_list = [df_close, df_min_risk_col, df_max_sharpe_col]
                 if df_bench_combined is not None:
                     data_list.append(df_bench_combined)
                 
+                # 合併
                 df_all_assets = pd.concat(data_list, axis=1)
                 
+                # 再次確保時區移除 (雙重保險)
                 if df_all_assets.index.tz is not None:
                     df_all_assets.index = df_all_assets.index.tz_localize(None)
 
@@ -294,6 +313,34 @@ if st.sidebar.button('開始計算'):
                 )
                 st.caption("註：表格中的「組合」欄位，即為上方系統計算出最佳權重後，回推至各年度的真實表現。")
 
+                # 滾動報酬
+                with st.expander("📊 個股滾動報酬與勝率分析", expanded=False):
+                    rolling_periods = {'3個月': 63, '6個月': 126, '1年': 252, '3年': 756, '5年': 1260, '10年': 2520}
+                    rolling_data = []
+                    for ticker in tickers:
+                        row = {'標的': ticker}
+                        for name, window in rolling_periods.items():
+                            if len(df_close) > window:
+                                roll_ret = df_close[ticker].pct_change(window).dropna()
+                                win_rate = (roll_ret > 0).mean()
+                                row[name] = win_rate
+                            else: row[name] = np.nan 
+                        time_to_100 = "> 10 年"
+                        for y in range(1, 11):
+                            window = y * 252
+                            if len(df_close) > window:
+                                min_ret = df_close[ticker].pct_change(window).min()
+                                if min_ret > 0:
+                                    time_to_100 = f"{y} 年"
+                                    break
+                        row['必勝持有期'] = time_to_100
+                        rolling_data.append(row)
+                    df_roll = pd.DataFrame(rolling_data)
+                    st.dataframe(df_roll.style.format({
+                        '3個月': '{:.0%}', '6個月': '{:.0%}', '1年': '{:.0%}', 
+                        '3年': '{:.0%}', '5年': '{:.0%}', '10年': '{:.0%}'
+                    }).background_gradient(subset=list(rolling_periods.keys()), cmap='RdYlGn', vmin=0, vmax=1))
+
             except Exception as e:
                 st.error(f"發生錯誤：{str(e)}")
 else:
@@ -303,5 +350,5 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.caption("⚠️ **免責聲明**")
 st.sidebar.caption("""
-本投資人市場分析與模擬工具參考，不構成任何投資建議或邀請保證。融資交易涉及高風險，可能導致損失超過原始本金。歷史回測不代表未來獲利。
+本工具僅供內部參考 請勿外流，並不構成任何投資建議或邀請保證。融資交易涉及高風險，可能導致損失超過原始本金。歷史回測不代表未來獲利。
 """)
