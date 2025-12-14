@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (寬敞排版版)')
+st.title('📈 智能投資組合優化器 (旗鑑版')
 st.markdown("""
 此工具會自動計算最佳權重，並根據**實際數據長度**回測真實報酬率、波動度與勝率。
 """)
