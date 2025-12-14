@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (精準回測修正版)')
+st.title('📈 智能投資組合優化器 (寬敞排版版)')
 st.markdown("""
 此工具會自動計算最佳權重，並根據**實際數據長度**回測真實報酬率、波動度與勝率。
 """)
@@ -167,17 +167,16 @@ if st.sidebar.button('開始計算'):
                     margin_equity = position_value - debt - interest_cost
                     return margin_equity
 
-                # ★ 新增：計算真實年數的 CAGR
+                # 計算真實年數的 CAGR
                 def calculate_cagr(series):
-                    # 計算實際天數
                     days = (series.index[-1] - series.index[0]).days
                     actual_years = days / 365.25
-                    if actual_years < 0.1: return 0 # 避免數據太短
+                    if actual_years < 0.1: return 0 
                     total_ret = series.iloc[-1]
                     if total_ret <= 0: return -1
                     return (total_ret)**(1/actual_years) - 1
 
-                # ★ 新增：計算年化波動度
+                # 計算年化波動度
                 def calculate_vol(series):
                     daily_ret = series.pct_change().dropna()
                     return daily_ret.std() * np.sqrt(252)
@@ -305,18 +304,21 @@ if st.sidebar.button('開始計算'):
                              fig.add_trace(go.Scatter(x=aligned_bench.index, y=aligned_bench, mode='lines', name=f'基準 ({bench_input})', line=dict(color='gray', width=2, dash='dash')))
                         st.plotly_chart(fig, use_container_width=True)
                         
-                        # ★ 修正：使用真實天數的 CAGR 和 波動度
+                        # ★ 排版修正：兩排兩欄
                         total_ret = margin_port_val_min.iloc[-1] - 1
                         real_cagr = calculate_cagr(margin_port_val_min)
                         real_vol = calculate_vol(margin_port_val_min)
                         mdd = calculate_mdd(margin_port_val_min)
                         
                         st.markdown("### 💰 回測結果")
-                        c1, c2, c3, c4 = st.columns(4) # 改成4欄
-                        c1.metric("總報酬率", f"{total_ret:.2%}")
-                        c2.metric("年化報酬", f"{real_cagr:.2%}")
-                        c3.metric("年化波動", f"{real_vol:.2%}") # 新增
-                        c4.metric("最大回撤", f"{mdd:.2%}", delta_color="inverse")
+                        # 第一排
+                        r1c1, r1c2 = st.columns(2)
+                        r1c1.metric("總報酬率", f"{total_ret:,.2%}")
+                        r1c2.metric("年化報酬 (CAGR)", f"{real_cagr:.2%}")
+                        # 第二排
+                        r2c1, r2c2 = st.columns(2)
+                        r2c1.metric("年化波動", f"{real_vol:.2%}")
+                        r2c2.metric("最大回撤 (MDD)", f"{mdd:.2%}", delta_color="inverse")
                     
                     st.divider()
                     display_annual_returns(margin_port_val_min, "🛡️ 最小風險組合")
@@ -352,11 +354,14 @@ if st.sidebar.button('開始計算'):
                         mdd_s = calculate_mdd(margin_port_val_sharpe)
                         
                         st.markdown("### 💰 回測結果")
-                        cs1, cs2, cs3, cs4 = st.columns(4) # 改成4欄
-                        cs1.metric("總報酬率", f"{total_ret_s:.2%}")
-                        cs2.metric("年化報酬", f"{real_cagr_s:.2%}")
-                        cs3.metric("年化波動", f"{real_vol_s:.2%}") # 新增
-                        cs4.metric("最大回撤", f"{mdd_s:.2%}", delta_color="inverse")
+                        # 第一排
+                        rs1c1, rs1c2 = st.columns(2)
+                        rs1c1.metric("總報酬率", f"{total_ret_s:,.2%}")
+                        rs1c2.metric("年化報酬 (CAGR)", f"{real_cagr_s:.2%}")
+                        # 第二排
+                        rs2c1, rs2c2 = st.columns(2)
+                        rs2c1.metric("年化波動", f"{real_vol_s:.2%}")
+                        rs2c2.metric("最大回撤 (MDD)", f"{mdd_s:.2%}", delta_color="inverse")
                     
                     st.divider()
                     display_annual_returns(margin_port_val_sharpe, "🚀 最大夏普組合")
