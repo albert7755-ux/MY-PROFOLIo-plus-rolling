@@ -9,9 +9,9 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (滾動勝率精簡版)')
+st.title('📈 智能投資組合優化器 (精準回測修正版)')
 st.markdown("""
-此工具會自動計算最佳權重，並回測該權重在過去每一年的真實報酬率與滾動持有勝率。
+此工具會自動計算最佳權重，並根據**實際數據長度**回測真實報酬率、波動度與勝率。
 """)
 
 # --- 2. 參數設定 ---
@@ -167,6 +167,21 @@ if st.sidebar.button('開始計算'):
                     margin_equity = position_value - debt - interest_cost
                     return margin_equity
 
+                # ★ 新增：計算真實年數的 CAGR
+                def calculate_cagr(series):
+                    # 計算實際天數
+                    days = (series.index[-1] - series.index[0]).days
+                    actual_years = days / 365.25
+                    if actual_years < 0.1: return 0 # 避免數據太短
+                    total_ret = series.iloc[-1]
+                    if total_ret <= 0: return -1
+                    return (total_ret)**(1/actual_years) - 1
+
+                # ★ 新增：計算年化波動度
+                def calculate_vol(series):
+                    daily_ret = series.pct_change().dropna()
+                    return daily_ret.std() * np.sqrt(252)
+
                 # ==========================
                 # B. 策略計算
                 # ==========================
@@ -201,8 +216,6 @@ if st.sidebar.button('開始計算'):
                 # ==========================
                 # C. 定義顯示函數
                 # ==========================
-                
-                # 1. 年度報酬表 (保留 Benchmark)
                 def display_annual_returns(portfolio_series, portfolio_name):
                     st.markdown(f"#### 📅 {portfolio_name} - 年度報酬回測")
                     df_port = portfolio_series.to_frame(name=portfolio_name)
@@ -224,7 +237,6 @@ if st.sidebar.button('開始計算'):
                     )
                     st.caption("註：深綠色代表大賺 (>30%)，深紅色代表大賠 (<-30%)。")
 
-                # 2. ★ 滾動勝率分析表 (移除 Benchmark)
                 def display_rolling_analysis(portfolio_series, portfolio_name):
                     st.markdown(f"#### 📊 {portfolio_name} - 滾動持有勝率分析 (Win Rate)")
                     st.caption("此表顯示：在不同持有期間下，**「正報酬 (不賠錢)」** 的機率。")
@@ -232,7 +244,6 @@ if st.sidebar.button('開始計算'):
                     rolling_periods = {'3個月': 63, '6個月': 126, '1年': 252, '3年': 756, '5年': 1260, '10年': 2520}
                     rolling_rows = []
 
-                    # 輔助函數
                     def get_rolling_stats(series, name):
                         row = {'標的': name}
                         for period_name, window in rolling_periods.items():
@@ -242,7 +253,6 @@ if st.sidebar.button('開始計算'):
                                 row[period_name] = win_rate
                             else:
                                 row[period_name] = np.nan
-                        
                         time_to_100 = "> 10 年"
                         for y in range(1, 11):
                             window = y * 252
@@ -254,17 +264,11 @@ if st.sidebar.button('開始計算'):
                         row['必勝持有期'] = time_to_100
                         return row
 
-                    # 1. 加入投資組合 (排第一)
                     rolling_rows.append(get_rolling_stats(portfolio_series, f"🏆 {portfolio_name}"))
-
-                    # (已移除) 這裡原本是加入 Benchmark 的程式碼
-
-                    # 2. 加入個股
                     for ticker in tickers:
                         rolling_rows.append(get_rolling_stats(df_close[ticker], ticker))
 
                     df_roll = pd.DataFrame(rolling_rows)
-                    
                     st.dataframe(
                         df_roll.style.format({
                             '3個月': '{:.0%}', '6個月': '{:.0%}', '1年': '{:.0%}', 
@@ -301,14 +305,18 @@ if st.sidebar.button('開始計算'):
                              fig.add_trace(go.Scatter(x=aligned_bench.index, y=aligned_bench, mode='lines', name=f'基準 ({bench_input})', line=dict(color='gray', width=2, dash='dash')))
                         st.plotly_chart(fig, use_container_width=True)
                         
+                        # ★ 修正：使用真實天數的 CAGR 和 波動度
                         total_ret = margin_port_val_min.iloc[-1] - 1
-                        cagr = (margin_port_val_min.iloc[-1])**(1/years) - 1 if margin_port_val_min.iloc[-1] > 0 else -1
+                        real_cagr = calculate_cagr(margin_port_val_min)
+                        real_vol = calculate_vol(margin_port_val_min)
                         mdd = calculate_mdd(margin_port_val_min)
+                        
                         st.markdown("### 💰 回測結果")
-                        c1, c2, c3 = st.columns(3)
+                        c1, c2, c3, c4 = st.columns(4) # 改成4欄
                         c1.metric("總報酬率", f"{total_ret:.2%}")
-                        c2.metric("年化報酬", f"{cagr:.2%}")
-                        c3.metric("最大回撤", f"{mdd:.2%}", delta_color="inverse")
+                        c2.metric("年化報酬", f"{real_cagr:.2%}")
+                        c3.metric("年化波動", f"{real_vol:.2%}") # 新增
+                        c4.metric("最大回撤", f"{mdd:.2%}", delta_color="inverse")
                     
                     st.divider()
                     display_annual_returns(margin_port_val_min, "🛡️ 最小風險組合")
@@ -339,13 +347,16 @@ if st.sidebar.button('開始計算'):
                         st.plotly_chart(fig_s, use_container_width=True)
                         
                         total_ret_s = margin_port_val_sharpe.iloc[-1] - 1
-                        cagr_s = (margin_port_val_sharpe.iloc[-1])**(1/years) - 1 if margin_port_val_sharpe.iloc[-1] > 0 else -1
+                        real_cagr_s = calculate_cagr(margin_port_val_sharpe)
+                        real_vol_s = calculate_vol(margin_port_val_sharpe)
                         mdd_s = calculate_mdd(margin_port_val_sharpe)
+                        
                         st.markdown("### 💰 回測結果")
-                        cs1, cs2, cs3 = st.columns(3)
+                        cs1, cs2, cs3, cs4 = st.columns(4) # 改成4欄
                         cs1.metric("總報酬率", f"{total_ret_s:.2%}")
-                        cs2.metric("年化報酬", f"{cagr_s:.2%}")
-                        cs3.metric("最大回撤", f"{mdd_s:.2%}", delta_color="inverse")
+                        cs2.metric("年化報酬", f"{real_cagr_s:.2%}")
+                        cs3.metric("年化波動", f"{real_vol_s:.2%}") # 新增
+                        cs4.metric("最大回撤", f"{mdd_s:.2%}", delta_color="inverse")
                     
                     st.divider()
                     display_annual_returns(margin_port_val_sharpe, "🚀 最大夏普組合")
