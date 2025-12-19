@@ -5,9 +5,10 @@ from scipy.optimize import linprog, curve_fit
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import re
 
 # --- 1. 基礎設定 ---
-st.set_page_config(page_title="債券策略大師 Pro (相對價值修正版)", layout="wide")
+st.set_page_config(page_title="債券策略大師 Pro (雙觀點分析版)", layout="wide")
 
 st.title("🛡️ 債券投資組合策略大師 Pro")
 st.markdown("""
@@ -15,9 +16,9 @@ st.markdown("""
 1. **收益最大化**：追求最高配息。
 2. **債券梯**：依據剩餘年期佈局，打造穩定現金流。
 3. **槓鈴策略**：長短年期配置。
-4. **相對價值**：找出「殖利率 > 合理曲線 (價格被低估)」的優質債券。
+4. **相對價值**：同時提供「殖利率」與「價格」雙觀點分析。
 5. **領息頻率組合**：自訂本金與領息頻率。
-<span style='color:green'>★ Fix: 修正相對價值選債邏輯，確保只挑選位於曲線「上方」(被低估) 的債券。</span>
+<span style='color:green'>★ New: 新增「價格分析圖」，直觀顯示被低估債券 (位於合理價格線下方)。</span>
 """)
 st.divider()
 
@@ -43,12 +44,9 @@ def excel_date_to_datetime(serial):
     except:
         return None
 
-def calculate_price_from_yield(row, target_ytm_percent):
-    """
-    通用定價公式：給定一個 YTM (target_ytm_percent)，算出理論價格
-    """
+def calculate_bond_price(row):
     try:
-        ytm = target_ytm_percent / 100
+        ytm = row['YTM'] / 100
         coupon_rate = row.get('Coupon', row['YTM']) / 100 
         years = row['Years_Remaining']
         
@@ -72,6 +70,28 @@ def calculate_price_from_yield(row, target_ytm_percent):
     except:
         return 100.0
 
+def calculate_price_from_yield(row, target_ytm_percent):
+    """
+    通用定價公式：給定一個 YTM (target_ytm_percent)，算出理論價格
+    """
+    try:
+        ytm = target_ytm_percent / 100
+        coupon_rate = row.get('Coupon', row['YTM']) / 100 
+        years = row['Years_Remaining']
+        freq_map = {'月配': 12, '季配': 4, '半年配': 2, '年配': 1}
+        freq = freq_map.get(row.get('Frequency', '半年配'), 2)
+        n_periods = int(years * freq)
+        if n_periods <= 0: return 100.0
+        coupon_payment = 100 * coupon_rate / freq
+        r_period = ytm / freq
+        pv_coupons = 0
+        for t in range(1, n_periods + 1):
+            pv_coupons += coupon_payment / ((1 + r_period) ** t)
+        pv_face = 100 / ((1 + r_period) ** n_periods)
+        return round(price, 4)
+    except:
+        return 100.0
+
 @st.cache_data
 def clean_data(file):
     try:
@@ -80,7 +100,6 @@ def clean_data(file):
         else:
             df = pd.read_excel(file, engine='openpyxl')
             
-        # 欄位映射
         col_mapping = {}
         first_row_vals = df.iloc[0].astype(str).str.upper().tolist()
         
@@ -97,13 +116,10 @@ def clean_data(file):
 
         df = df.rename(columns=col_mapping)
         
-        # 信評欄位偵測 (暴力偵測)
         rating_rename = {}
         rating_patterns = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB+', 'BBB', 'BBB-', 'AA1', 'AA2', 'A1', 'A2', 'BAA1']
-        
         known_cols = list(col_mapping.values())
         candidate_cols = [c for c in df.columns if c not in known_cols]
-        
         sp_col, moody_col, fitch_col = None, None, None
         
         for col in candidate_cols:
@@ -112,7 +128,6 @@ def clean_data(file):
             col_upper = str(col).upper()
             first_val = str(df[col].iloc[0]).upper()
             is_rating = len(matches) > 0
-            
             if is_rating or 'S&P' in col_upper or 'S&P' in first_val:
                 if not sp_col: sp_col = col
             elif is_rating or 'MOODY' in col_upper or 'MOODY' in first_val:
@@ -125,14 +140,13 @@ def clean_data(file):
         if fitch_col: rating_rename[fitch_col] = 'Fitch_Rating'
         df = df.rename(columns=rating_rename)
 
-        # 剔除雙層標題列
         if 'YTM' in df.columns:
             try: float(df['YTM'].iloc[0])
             except: df = df.iloc[1:].reset_index(drop=True)
 
         req_cols = ['ISIN', 'Name', 'YTM', 'Years_Remaining']
         if not all(c in df.columns for c in req_cols):
-            return None, f"缺少必要欄位。請確認包含：ISIN, 名稱, YTM, 剩餘年期。"
+            return None, f"缺少必要欄位: {req_cols}"
 
         df['YTM'] = pd.to_numeric(df['YTM'], errors='coerce')
         df['Years_Remaining'] = pd.to_numeric(df['Years_Remaining'], errors='coerce')
@@ -142,7 +156,6 @@ def clean_data(file):
         df = df.dropna(subset=['YTM', 'Years_Remaining'])
         df = df[df['YTM'] > 0] 
 
-        # 信評清洗
         for r in ['SP_Rating', 'Fitch_Rating', 'Moody_Rating']:
             if r not in df.columns: df[r] = np.nan
         invalid_list = ['N/A', 'NA', 'NAN', '-', ' ', '']
@@ -158,12 +171,10 @@ def clean_data(file):
         if 'Frequency' in df.columns: df['Frequency'] = df['Frequency'].apply(standardize_frequency)
         else: df['Frequency'] = '半年配'
 
-        # 此處的 "理論價格" 僅用於資料檢查 (用自身YTM算)，真正的相對價值分析會在策略函數中重算
         df['Implied_Price'] = df.apply(lambda row: calculate_price_from_yield(row, row['YTM']), axis=1)
         if 'Original_Price' not in df.columns:
             df['Original_Price'] = df['Implied_Price']
 
-        # 月份
         df['Pay_Month'] = 0
         if 'Maturity' in df.columns:
             try:
@@ -193,11 +204,9 @@ def fit_yield_curve(x, a, b):
     return a + b * np.log(x)
 
 def run_relative_value(df, allow_dup, top_n, min_dur, target_freqs):
-    # 1. 準備數據
     df_calc = df[df['Years_Remaining'] > 0.1].copy()
     if len(df_calc) < 5: return pd.DataFrame(), pd.DataFrame()
 
-    # 2. 計算全市場的合理殖利率曲線 (Fair YTM Curve)
     try:
         popt, _ = curve_fit(fit_yield_curve, df_calc['Years_Remaining'], df_calc['YTM'])
         df_calc['Fair_YTM'] = fit_yield_curve(df_calc['Years_Remaining'], *popt)
@@ -206,21 +215,12 @@ def run_relative_value(df, allow_dup, top_n, min_dur, target_freqs):
         p = np.poly1d(z)
         df_calc['Fair_YTM'] = p(df_calc['Years_Remaining'])
 
-    # 3. 計算每張債券的「合理價格 (Fair Price)」
-    # 使用 Fair_YTM 折現，而不是用它自己的 YTM
+    # 計算 Fair Price (為了算出 Gap)
     df_calc['Fair_Price'] = df_calc.apply(lambda row: calculate_price_from_yield(row, row['Fair_YTM']), axis=1)
-
-    # 4. 計算價差 (Valuation Gap)
-    # Gap = 合理價格 - 銀行賣價
-    # 如果 Gap > 0，代表合理價是 102，銀行只賣 100 -> 買入！
     df_calc['Valuation_Gap'] = df_calc['Fair_Price'] - df_calc['Original_Price']
 
-    # 5. 篩選與排序
     pool = df_calc[df_calc['Years_Remaining'] >= min_dur]
     if target_freqs: pool = pool[pool['Frequency'].isin(target_freqs)]
-    
-    # 只選 Gap > 0 的 (正價差，被低估)
-    # pool = pool[pool['Valuation_Gap'] > 0] # 可選：是否強制只選正的？這裡先排序就好
     pool = pool.sort_values('Valuation_Gap', ascending=False)
     
     selected = []
@@ -236,12 +236,10 @@ def run_relative_value(df, allow_dup, top_n, min_dur, target_freqs):
             used_issuers.add(row['Name'])
             count += 1
             
-    # 回傳時，把計算出的 Fair_Price 和 Gap 帶出去顯示
-    if selected: 
-        return pd.DataFrame(selected), df_calc
+    if selected: return pd.DataFrame(selected), df_calc
     return pd.DataFrame(), df_calc
 
-# (其他策略函數保持不變，為節省篇幅直接引用)
+# (其他策略保持不變，直接引用)
 def run_max_yield(df, target_dur, target_score, max_w):
     n = len(df)
     c = -1 * df['YTM'].values
@@ -393,11 +391,8 @@ if uploaded_file:
             st.divider()
             
             portfolio['Allocation %'] = (portfolio['Weight'] * 100).round(1)
-            # 此處 Final_Price 若是相對價值策略，應顯示 Fair_Price 還是 Original_Price? 
-            # 實務上客戶買入是 Original_Price，所以計算成本用 Original_Price
             price_col = 'Original_Price' if 'Original_Price' in portfolio.columns else 'Implied_Price'
             portfolio['Final_Price'] = portfolio[price_col].fillna(100)
-            
             portfolio['Invested_Amount'] = investment_amt * portfolio['Weight']
             portfolio['Face_Value_Bought'] = portfolio['Invested_Amount'] / (portfolio['Final_Price'] / 100)
             
@@ -421,32 +416,24 @@ if uploaded_file:
             with c1:
                 st.subheader("📋 建議清單")
                 cols = ['Name', 'Rating_Source', 'YTM', 'Years_Remaining', 'Allocation %', 'Annual_Coupon_Amt']
-                if 'Fair_Price' in portfolio.columns: cols.insert(2, 'Fair_Price') # 相對價值策略才有
                 if 'Original_Price' in portfolio.columns: cols.insert(3, 'Original_Price')
                 if 'Valuation_Gap' in portfolio.columns: cols.insert(4, 'Valuation_Gap')
                 if 'Frequency' in portfolio.columns: cols.append('Frequency')
                 if 'Cycle_Str' in portfolio.columns: cols.insert(1, 'Cycle_Str')
-                
-                rename_dict = {
-                    'Original_Price': '銀行報價 (Offer)',
-                    'Fair_Price': '合理價格 (Fair)',
-                    'Valuation_Gap': '潛在價差 (Alpha)',
-                    'Years_Remaining': '剩餘年期',
-                    'Annual_Coupon_Amt': '預估年息',
-                    'Rating_Source': '信評',
-                    'Cycle_Str': '配息月份'
-                }
+                rename_dict = {'Original_Price': '銀行報價 (Offer)', 'Valuation_Gap': '潛在價差 (Alpha)', 'Years_Remaining': '剩餘年期', 'Annual_Coupon_Amt': '預估年息', 'Rating_Source': '信評', 'Cycle_Str': '配息月份'}
                 display_df = portfolio[cols].rename(columns=rename_dict).copy()
-                for c in ['銀行報價 (Offer)', '合理價格 (Fair)', '潛在價差 (Alpha)', '剩餘年期']:
+                for c in ['銀行報價 (Offer)', '潛在價差 (Alpha)', '剩餘年期']:
                     if c in display_df.columns: display_df[c] = display_df[c].map('{:.2f}'.format)
                 if '預估年息' in display_df.columns: display_df['預估年息'] = display_df['預估年息'].map('{:,.0f}'.format)
                 st.dataframe(display_df, hide_index=True, use_container_width=True)
 
             with c2:
-                tab1, tab2 = st.tabs(["📊 策略分析", "💰 現金流試算"])
+                # 這裡就是關鍵的雙 Tab (Yield / Price)
+                tab1, tab2, tab3 = st.tabs(["📊 殖利率分析 (Yield)", "📉 價格分析 (Price)", "💰 現金流試算"])
+                
                 with tab1:
                     if strategy == "相對價值" and not df_with_alpha.empty:
-                        st.subheader("相對價值回歸分析")
+                        st.caption("💡 在此圖中，星星位於線的**上方**代表**殖利率高 (便宜)**。")
                         base_data = df_with_alpha
                         x_range = np.linspace(base_data['Years_Remaining'].min(), base_data['Years_Remaining'].max(), 100)
                         try:
@@ -456,33 +443,36 @@ if uploaded_file:
                             z = np.polyfit(base_data['Years_Remaining'], base_data['YTM'], 2)
                             p = np.poly1d(z)
                             y_fair = p(x_range)
-                        
                         fig_rv = go.Figure()
                         fig_rv.add_trace(go.Scatter(x=base_data['Years_Remaining'], y=base_data['YTM'], mode='markers', name='市場', marker=dict(color='lightgrey', size=6), hovertext=base_data['Name']))
-                        fig_rv.add_trace(go.Scatter(x=x_range, y=y_fair, mode='lines', name='合理價值', line=dict(dash='dash', color='blue')))
-                        fig_rv.add_trace(go.Scatter(x=portfolio['Years_Remaining'], y=portfolio['YTM'], mode='markers', name='低估買入 (YTM>Fair)', marker=dict(color='red', size=15, symbol='star'), hovertext=portfolio['Name']))
-                        fig_rv.update_layout(xaxis_title="剩餘年期 (Years)", yaxis_title="殖利率 (YTM)")
+                        fig_rv.add_trace(go.Scatter(x=x_range, y=y_fair, mode='lines', name='合理殖利率 (Fair Yield)', line=dict(dash='dash', color='blue')))
+                        fig_rv.add_trace(go.Scatter(x=portfolio['Years_Remaining'], y=portfolio['YTM'], mode='markers', name='低估買入 (Stars)', marker=dict(color='red', size=15, symbol='star'), hovertext=portfolio['Name']))
+                        fig_rv.update_layout(xaxis_title="剩餘年期 (Years)", yaxis_title="殖利率 (YTM) - 越高越好")
                         st.plotly_chart(fig_rv, use_container_width=True)
-                    elif strategy == "領息頻率組合":
-                         st.info("👈 請切換至「現金流試算」分頁查看詳細圖表")
                     else:
-                        st.subheader("風險/收益分佈圖")
-                        df_raw['Type'] = '未選入'
-                        portfolio['Type'] = '建議買入'
-                        if excluded_issuers: df_raw.loc[df_raw['Name'].isin(excluded_issuers), 'Type'] = '已剔除'
-                        all_plot = pd.concat([df_raw[~df_raw['ISIN'].isin(portfolio['ISIN'])], portfolio])
-                        color_map = {'未選入': '#e0e0e0', '建議買入': '#ef553b', '已剔除': 'rgba(0,0,0,0.1)'}
-                        fig = px.scatter(
-                            all_plot, x='Years_Remaining', y='YTM', color='Type', 
-                            color_discrete_map=color_map,
-                            size=all_plot['Type'].map({'未選入': 5, '建議買入': 15, '已剔除': 3}),
-                            hover_data=['Name'],
-                            title=f"{strategy} 策略分佈",
-                            labels={'Years_Remaining': '剩餘年期 (Years)'}
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.info("此圖表僅適用於相對價值策略。")
 
                 with tab2:
+                    if strategy == "相對價值" and not df_with_alpha.empty:
+                        st.caption("💡 在此圖中，星星位於線的**下方**代表**價格低 (便宜)**。")
+                        base_data = df_with_alpha
+                        # 畫價格曲線
+                        fig_p = go.Figure()
+                        fig_p.add_trace(go.Scatter(x=base_data['Years_Remaining'], y=base_data['Original_Price'], mode='markers', name='市場', marker=dict(color='lightgrey', size=6), hovertext=base_data['Name']))
+                        
+                        # 這裡的線我們要畫 Fair Price (合理價格)
+                        # 為了畫出平滑曲線，我們將 x_range 代入 Fair Price 公式
+                        # 注意：我們需要一個 Coupon 假設才能畫出連續的 Price 曲線 (因為 Price 受 Coupon 影響很大)
+                        # 為了簡化視覺，我們改為畫 "Scatter of Fair Price" (點對點)
+                        fig_p.add_trace(go.Scatter(x=base_data['Years_Remaining'], y=base_data['Fair_Price'], mode='markers', name='合理價格點 (Fair Price)', marker=dict(color='blue', size=4, opacity=0.5)))
+                        
+                        fig_p.add_trace(go.Scatter(x=portfolio['Years_Remaining'], y=portfolio['Original_Price'], mode='markers', name='低估買入 (Stars)', marker=dict(color='red', size=15, symbol='star'), hovertext=portfolio['Name']))
+                        fig_p.update_layout(xaxis_title="剩餘年期 (Years)", yaxis_title="價格 (Price) - 越低越好")
+                        st.plotly_chart(fig_p, use_container_width=True)
+                    else:
+                        st.info("此圖表僅適用於相對價值策略。")
+
+                with tab3:
                     st.subheader("預估每月入帳金額 (稅前)")
                     months = list(range(1, 13))
                     cash_flow = [0] * 12
