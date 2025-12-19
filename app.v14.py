@@ -9,9 +9,9 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (CAGR精準校正版)')
+st.title('📈 智能投資組合優化器 (融資視覺化版)')
 st.markdown("""
-此工具內建 **CAGR 自動校正引擎**，能消除波動耗損，讓設定的目標報酬與回測結果更一致。
+此工具內建 **資金槓桿視覺化**，讓您一眼看懂融資前後的本金放大效果與最終獲利差異。
 """)
 
 # --- 2. 參數設定 ---
@@ -38,7 +38,9 @@ if use_margin:
     loan_ratio = st.sidebar.slider("融資成數 (銀行借款比例)", 0.0, 0.9, 0.6, 0.1)
     margin_rate = st.sidebar.number_input("融資年利率 (%)", 2.0, 15.0, 6.0, 0.1) / 100
     self_fund_ratio = 1 - loan_ratio
-    leverage = 1 / self_fund_ratio if self_fund_ratio > 0 else 1
+    # 避免分母為 0
+    if self_fund_ratio <= 0.01: self_fund_ratio = 0.01
+    leverage = 1 / self_fund_ratio
     st.sidebar.info(f"槓桿倍數：**{leverage:.1f} 倍**")
 else:
     loan_ratio = 0.0
@@ -63,7 +65,7 @@ if st.sidebar.button('開始計算'):
     if len(user_tickers) < 2:
         st.error("請至少輸入兩檔標的。")
     else:
-        with st.spinner('正在進行 AI 運算 (含波動耗損校正)...'):
+        with st.spinner('正在進行 AI 運算與多維度回測...'):
             try:
                 # ==========================
                 # A. 數據準備
@@ -85,7 +87,6 @@ if st.sidebar.button('開始計算'):
                     st.error("無法抓取投資組合數據。")
                     st.stop()
                 
-                # 強制移除時區
                 if df_close.index.tz is not None:
                     df_close.index = df_close.index.tz_localize(None)
 
@@ -191,7 +192,7 @@ if st.sidebar.button('開始計算'):
                     return daily_ret.std() * np.sqrt(252)
 
                 # ==========================
-                # B. 策略運算核心 (含校正邏輯)
+                # B. 策略運算核心
                 # ==========================
                 optimal_weights = []
                 strategy_name = ""
@@ -221,35 +222,26 @@ if st.sidebar.button('開始計算'):
                     strategy_name = f"🎯 目標報酬組合 ({target_return:.1%})"
                     strategy_color = "blue"
                     max_possible_ret = mean_returns.max()
-                    
-                    # 判斷目標是否過高
                     if target_return > max_possible_ret:
                         st.warning(f"⚠️ 提示：目標 ({target_return:.1%}) 超過歷史極限，改為 {max_possible_ret:.1%}。")
                         target_return = max_possible_ret - 0.001
 
-                    # 最小化波動度
                     def min_variance(weights, cov_matrix):
                         return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
                     
-                    # ★ 關鍵修正：CAGR 近似公式校正
-                    # Arithmetic Mean (算術平均) = Geometric Mean (幾何平均/CAGR) + 0.5 * Variance (波動率平方)
-                    # 我們要求：Geometric Mean == target_return
-                    # 所以：Arithmetic Mean - 0.5 * Variance == target_return
+                    # CAGR 近似公式校正
                     def target_constraint(weights):
-                        p_ret = np.sum(mean_returns * weights) # 算術平均
-                        p_var = np.dot(weights.T, np.dot(cov_matrix, weights)) # 變異數
-                        # 這是幾何平均的近似值
+                        p_ret = np.sum(mean_returns * weights) 
+                        p_var = np.dot(weights.T, np.dot(cov_matrix, weights)) 
                         geo_ret_approx = p_ret - 0.5 * p_var
                         return geo_ret_approx - target_return
 
-                    # 使用新的約束條件取代舊的
                     constraints.append({'type': 'eq', 'fun': target_constraint})
                     
                     res = minimize(min_variance, init_guess, args=(cov_matrix,), 
                                    method='SLSQP', bounds=bounds, constraints=constraints)
                     
                     if not res.success:
-                         # 如果近似公式解不出來，退回到簡單算術平均，但提示用戶
                          constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
                                         {'type': 'eq', 'fun': lambda x: np.sum(mean_returns * x) - target_return}]
                          res = minimize(min_variance, init_guess, args=(cov_matrix,), 
@@ -258,8 +250,8 @@ if st.sidebar.button('開始計算'):
                     optimal_weights = res.x
 
                 # 計算結果
-                raw_port_val = (normalized_prices * optimal_weights).sum(axis=1)
-                margin_port_val = calculate_margin_equity(raw_port_val, leverage, loan_ratio, margin_rate)
+                raw_port_val = (normalized_prices * optimal_weights).sum(axis=1) # 無融資曲線 (起點1.0)
+                margin_port_val = calculate_margin_equity(raw_port_val, leverage, loan_ratio, margin_rate) # 融資後曲線 (起點1.0)
                 margin_port_val.name = strategy_name
 
                 st.success(f"運算完成！策略：{strategy_name}")
@@ -292,7 +284,7 @@ if st.sidebar.button('開始計算'):
                             fig.add_trace(go.Scatter(x=aligned_bench.index, y=aligned_bench, mode='lines', name=f'基準 ({bench_input})', line=dict(color='gray', width=2, dash='dash')))
                     st.plotly_chart(fig, use_container_width=True)
 
-                    # 寬敞排版
+                    # 績效指標
                     total_ret = margin_port_val.iloc[-1] - 1
                     real_cagr = calculate_cagr(margin_port_val)
                     real_vol = calculate_vol(margin_port_val)
@@ -306,7 +298,86 @@ if st.sidebar.button('開始計算'):
                     r2c1.metric("年化波動", f"{real_vol:.2%}")
                     r2c2.metric("最大回撤 (MDD)", f"{mdd:.2%}", delta_color="inverse")
 
-                # 2. 年度報酬表 (含平均 + 展開高度)
+                # ==========================
+                # D. 融資效益視覺化 (Bar Chart) - ★ 新增重點
+                # ==========================
+                st.markdown("---")
+                st.subheader("💰 融資效益視覺化 (以投資 100 元為例)")
+                st.caption("直觀比較：融資前後的「本金放大效果」與「最終獲利金額」。")
+                
+                col_v1, col_v2 = st.columns(2)
+                
+                # 計算數據
+                initial_own = 100
+                total_pos_initial = initial_own * leverage # 融資後總部位 (例如 250)
+                loan_amt = total_pos_initial - initial_own # 借款金額 (例如 150)
+                
+                # 期末價值計算
+                # 無融資期末 = 100 * raw_port_val.iloc[-1]
+                # 有融資期末 = 100 * margin_port_val.iloc[-1]
+                end_val_no_margin = initial_own * raw_port_val.iloc[-1]
+                end_val_margin = initial_own * margin_port_val.iloc[-1]
+
+                with col_v1:
+                    # 圖表 1: 購買力 (Buying Power)
+                    fig_cap = go.Figure()
+                    # 無融資 Bar
+                    fig_cap.add_trace(go.Bar(
+                        name='自有本金', 
+                        x=['無融資'], y=[initial_own], 
+                        text=[f"${initial_own}"], textposition='auto',
+                        marker_color='#2ca02c'
+                    ))
+                    # 有融資 Bar (堆疊)
+                    fig_cap.add_trace(go.Bar(
+                        name='自有本金', 
+                        x=['有融資'], y=[initial_own], 
+                        text=[f"${initial_own}"], textposition='auto',
+                        marker_color='#2ca02c', showlegend=False
+                    ))
+                    fig_cap.add_trace(go.Bar(
+                        name='銀行借款', 
+                        x=['有融資'], y=[loan_amt], 
+                        text=[f"${loan_amt:.0f}"], textposition='auto',
+                        marker_color='#d62728'
+                    ))
+                    
+                    fig_cap.update_layout(
+                        barmode='stack', 
+                        title=f'初始本金比較 (放大 {leverage:.1f} 倍)', 
+                        height=350,
+                        yaxis_title="金額 ($)",
+                        showlegend=True
+                    )
+                    st.plotly_chart(fig_cap, use_container_width=True)
+
+                with col_v2:
+                    # 圖表 2: 最終獲利 (Final Result)
+                    fig_res = go.Figure()
+                    fig_res.add_trace(go.Bar(
+                        x=['無融資', '有融資'],
+                        y=[end_val_no_margin, end_val_margin],
+                        text=[f"${end_val_no_margin:,.0f}", f"${end_val_margin:,.0f}"],
+                        textposition='auto',
+                        marker_color=['#1f77b4', '#ff7f0e']
+                    ))
+                    
+                    # 計算多賺多少
+                    profit_diff = end_val_margin - end_val_no_margin
+                    title_text = f'期末淨值比較 (融資多賺 ${profit_diff:,.0f})' if profit_diff > 0 else f'期末淨值比較 (融資少賺 ${abs(profit_diff):,.0f})'
+                    
+                    fig_res.update_layout(
+                        title=title_text, 
+                        height=350,
+                        yaxis_title="期末價值 ($)"
+                    )
+                    st.plotly_chart(fig_res, use_container_width=True)
+
+                # ==========================
+                # E. 年度報酬與滾動分析
+                # ==========================
+                
+                # 年度報酬表
                 st.markdown("---")
                 st.subheader(f"📅 年度報酬回測 ({strategy_name})")
                 
@@ -337,7 +408,7 @@ if st.sidebar.button('開始計算'):
                 )
                 st.caption("註：最上方列為歷年平均報酬率。")
 
-                # 3. 滾動勝率
+                # 滾動勝率
                 st.markdown("---")
                 st.subheader(f"📊 滾動持有勝率分析 ({strategy_name})")
                 
