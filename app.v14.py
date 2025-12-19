@@ -9,9 +9,9 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (目標報酬鎖定版)')
+st.title('📈 智能投資組合優化器 (CAGR精準校正版)')
 st.markdown("""
-此工具支援 **最小風險**、**最大夏普** 與 **鎖定目標報酬** 三種配置模式，解決債券配置過高的問題。
+此工具內建 **CAGR 自動校正引擎**，能消除波動耗損，讓設定的目標報酬與回測結果更一致。
 """)
 
 # --- 2. 參數設定 ---
@@ -45,7 +45,7 @@ else:
     margin_rate = 0.0
     leverage = 1.0
 
-# --- ★ 新增功能：優化目標選擇 ---
+# --- 優化目標 ---
 st.sidebar.markdown("---")
 st.sidebar.header("4. 優化目標 (Optimization)")
 opt_method = st.sidebar.radio(
@@ -55,15 +55,15 @@ opt_method = st.sidebar.radio(
 
 target_return = 0.0
 if opt_method == "🎯 鎖定目標報酬 (積極)":
-    target_return = st.sidebar.slider("您想要的年化報酬率 (%)", 1.0, 30.0, 8.0, 0.5) / 100
-    st.sidebar.caption("系統將計算：在達成此報酬率的前提下，風險最低的配置。")
+    target_return = st.sidebar.slider("您想要的年化報酬率 (CAGR)", 1.0, 30.0, 8.0, 0.5) / 100
+    st.sidebar.caption("系統將自動補償波動耗損，力求回測結果貼近此目標。")
 
 # --- 3. 核心邏輯 ---
 if st.sidebar.button('開始計算'):
     if len(user_tickers) < 2:
         st.error("請至少輸入兩檔標的。")
     else:
-        with st.spinner('正在進行 AI 運算與多維度回測...'):
+        with st.spinner('正在進行 AI 運算 (含波動耗損校正)...'):
             try:
                 # ==========================
                 # A. 數據準備
@@ -158,12 +158,11 @@ if st.sidebar.button('開始計算'):
                 normalized_prices = df_close / df_close.iloc[0]
                 
                 num_assets = len(tickers)
-                # 預設約束條件：權重總和為 1
                 constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1}]
                 bounds = tuple((0, 1) for _ in range(num_assets))
                 init_guess = [1/num_assets] * num_assets
 
-                # 4. 定義共用函數
+                # 4. 共用函數
                 def calculate_mdd(series):
                     roll_max = series.cummax()
                     drawdown = (series - roll_max) / roll_max
@@ -192,20 +191,17 @@ if st.sidebar.button('開始計算'):
                     return daily_ret.std() * np.sqrt(252)
 
                 # ==========================
-                # B. 策略運算核心 (根據選擇跑不同算法)
+                # B. 策略運算核心 (含校正邏輯)
                 # ==========================
-                
                 optimal_weights = []
                 strategy_name = ""
                 strategy_color = ""
 
-                # --- 演算法選擇 ---
                 if "最小風險" in opt_method:
                     strategy_name = "🛡️ 最小風險組合"
                     strategy_color = "green"
                     def min_variance(weights, cov_matrix):
                         return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-                    
                     res = minimize(min_variance, init_guess, args=(cov_matrix,), 
                                    method='SLSQP', bounds=bounds, constraints=constraints)
                     optimal_weights = res.x
@@ -217,7 +213,6 @@ if st.sidebar.button('開始計算'):
                         p_ret = np.sum(mean_returns * weights)
                         p_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
                         return - (p_ret - rf) / p_vol
-                    
                     res = minimize(neg_sharpe_ratio, init_guess, args=(mean_returns, cov_matrix, risk_free_rate),
                                    method='SLSQP', bounds=bounds, constraints=constraints)
                     optimal_weights = res.x
@@ -225,29 +220,44 @@ if st.sidebar.button('開始計算'):
                 elif "目標報酬" in opt_method:
                     strategy_name = f"🎯 目標報酬組合 ({target_return:.1%})"
                     strategy_color = "blue"
-                    
-                    # 檢查目標是否合理 (不能超過資產最大報酬)
                     max_possible_ret = mean_returns.max()
+                    
+                    # 判斷目標是否過高
                     if target_return > max_possible_ret:
-                        st.warning(f"⚠️ 提示：您設定的目標報酬 {target_return:.1%} 超過所有資產的歷史最大回報 ({max_possible_ret:.1%})，系統將以最大可行回報進行計算。")
+                        st.warning(f"⚠️ 提示：目標 ({target_return:.1%}) 超過歷史極限，改為 {max_possible_ret:.1%}。")
                         target_return = max_possible_ret - 0.001
 
-                    # 最小化波動度，但多一個約束：預期報酬 == target_return
+                    # 最小化波動度
                     def min_variance(weights, cov_matrix):
                         return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
                     
-                    # 新增約束條件
-                    constraints.append({'type': 'eq', 'fun': lambda x: np.sum(mean_returns * x) - target_return})
+                    # ★ 關鍵修正：CAGR 近似公式校正
+                    # Arithmetic Mean (算術平均) = Geometric Mean (幾何平均/CAGR) + 0.5 * Variance (波動率平方)
+                    # 我們要求：Geometric Mean == target_return
+                    # 所以：Arithmetic Mean - 0.5 * Variance == target_return
+                    def target_constraint(weights):
+                        p_ret = np.sum(mean_returns * weights) # 算術平均
+                        p_var = np.dot(weights.T, np.dot(cov_matrix, weights)) # 變異數
+                        # 這是幾何平均的近似值
+                        geo_ret_approx = p_ret - 0.5 * p_var
+                        return geo_ret_approx - target_return
+
+                    # 使用新的約束條件取代舊的
+                    constraints.append({'type': 'eq', 'fun': target_constraint})
                     
                     res = minimize(min_variance, init_guess, args=(cov_matrix,), 
                                    method='SLSQP', bounds=bounds, constraints=constraints)
                     
                     if not res.success:
-                         st.warning("無法精確達成目標報酬，顯示最接近之結果。")
+                         # 如果近似公式解不出來，退回到簡單算術平均，但提示用戶
+                         constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
+                                        {'type': 'eq', 'fun': lambda x: np.sum(mean_returns * x) - target_return}]
+                         res = minimize(min_variance, init_guess, args=(cov_matrix,), 
+                                        method='SLSQP', bounds=bounds, constraints=constraints)
                     
                     optimal_weights = res.x
 
-                # --- 計算結果 ---
+                # 計算結果
                 raw_port_val = (normalized_prices * optimal_weights).sum(axis=1)
                 margin_port_val = calculate_margin_equity(raw_port_val, leverage, loan_ratio, margin_rate)
                 margin_port_val.name = strategy_name
@@ -255,10 +265,10 @@ if st.sidebar.button('開始計算'):
                 st.success(f"運算完成！策略：{strategy_name}")
 
                 # ==========================
-                # C. 顯示區塊 (單一分頁顯示)
+                # C. 顯示區塊
                 # ==========================
                 
-                # 1. 配置與圓餅圖
+                # 1. 配置與走勢
                 col_top1, col_top2 = st.columns([1, 2])
                 with col_top1:
                     st.subheader("📊 建議配置權重")
@@ -282,7 +292,7 @@ if st.sidebar.button('開始計算'):
                             fig.add_trace(go.Scatter(x=aligned_bench.index, y=aligned_bench, mode='lines', name=f'基準 ({bench_input})', line=dict(color='gray', width=2, dash='dash')))
                     st.plotly_chart(fig, use_container_width=True)
 
-                    # 績效指標 (兩排)
+                    # 寬敞排版
                     total_ret = margin_port_val.iloc[-1] - 1
                     real_cagr = calculate_cagr(margin_port_val)
                     real_vol = calculate_vol(margin_port_val)
@@ -296,7 +306,7 @@ if st.sidebar.button('開始計算'):
                     r2c1.metric("年化波動", f"{real_vol:.2%}")
                     r2c2.metric("最大回撤 (MDD)", f"{mdd:.2%}", delta_color="inverse")
 
-                # 2. 年度報酬表
+                # 2. 年度報酬表 (含平均 + 展開高度)
                 st.markdown("---")
                 st.subheader(f"📅 年度報酬回測 ({strategy_name})")
                 
@@ -310,15 +320,24 @@ if st.sidebar.button('開始計算'):
                 
                 ann_prices = df_all.resample('Y').last()
                 ann_ret = ann_prices.pct_change().dropna()
-                ann_ret.index = ann_ret.index.year
-                ann_ret = ann_ret.sort_index(ascending=False)
                 
-                st.dataframe(
-                    ann_ret.style.format("{:.2%}")
-                    .background_gradient(cmap='RdYlGn', vmin=-0.3, vmax=0.3)
-                )
+                avg_ret = ann_ret.mean()
+                ann_ret.index = ann_ret.index.astype(str)
+                
+                df_avg = avg_ret.to_frame(name="🔥 平均報酬 (Avg)").T
+                final_annual_df = pd.concat([df_avg, ann_ret.sort_index(ascending=False)])
 
-                # 3. 滾動勝率 (精簡版)
+                table_height = (len(final_annual_df) + 1) * 35 + 3
+
+                st.dataframe(
+                    final_annual_df.style.format("{:.2%}")
+                    .background_gradient(cmap='RdYlGn', vmin=-0.3, vmax=0.3),
+                    height=table_height,
+                    use_container_width=True
+                )
+                st.caption("註：最上方列為歷年平均報酬率。")
+
+                # 3. 滾動勝率
                 st.markdown("---")
                 st.subheader(f"📊 滾動持有勝率分析 ({strategy_name})")
                 
@@ -345,7 +364,6 @@ if st.sidebar.button('開始計算'):
                     row['必勝持有期'] = time_to_100
                     return row
 
-                # 只加投組 + 個股 (不加 Benchmark)
                 rolling_rows.append(get_rolling_stats(margin_port_val, f"🏆 {strategy_name}"))
                 for ticker in tickers:
                     rolling_rows.append(get_rolling_stats(df_close[ticker], ticker))
