@@ -17,7 +17,7 @@ st.title('🔒 系統登入')
 password = st.text_input("🔑 請輸入系統密碼 (Access Code)", type="password")
 
 if password != "5428":
-    st.error("⛔ 密碼錯誤或尚未輸入。請輸入正確密碼 (5428) 以解鎖系統。")
+    st.error("⛔ 密碼錯誤或尚未輸入。請輸入正確密碼 以解鎖系統。")
     st.stop()  # ★ 這裡會強制停止，直到密碼正確
 
 # --- 密碼正確後，才會顯示原本的標題與內容 ---
