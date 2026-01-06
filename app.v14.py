@@ -9,7 +9,17 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (平均報酬版)')
+
+# ==========================================
+# ★ 新增功能：密碼保護系統
+# ==========================================
+password = st.text_input("請輸入系統密碼：", type="password")
+if password != "5428":
+    st.info("🔒 請輸入正確密碼以解鎖進階回測功能。")
+    st.stop()  # 密碼錯誤則停止執行下方所有程式碼
+
+# --- 密碼正確後才會顯示以下內容 ---
+st.title('📈 智能投資組合優化器 (VIP 專用版)')
 st.markdown("""
 此工具採用 **買入持有 (Buy & Hold)** 策略，並顯示 **平均年報酬率 (Average Return)** 以供展示。
 """)
@@ -180,14 +190,10 @@ if st.sidebar.button('開始計算'):
                     margin_equity = position_value - debt - interest_cost
                     return margin_equity
 
-                # ★ 新增：計算平均年報酬 (Arithmetic Mean)
                 def calculate_avg_annual_ret(series):
-                    # 強制轉為 Series 並處理時區
                     temp_series = series.copy()
                     if temp_series.index.tz is not None:
                         temp_series.index = temp_series.index.tz_localize(None)
-                    
-                    # 轉成年報酬
                     ann_ret = temp_series.resample('Y').last().pct_change().dropna()
                     return ann_ret.mean()
 
@@ -233,11 +239,9 @@ if st.sidebar.button('開始計算'):
                     def min_variance(weights, cov_matrix):
                         return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
                     
-                    # 使用算術平均 + 波動修正 (預測初始配置)
                     def target_constraint(weights):
                         p_ret = np.sum(mean_returns * weights) 
                         p_var = np.dot(weights.T, np.dot(cov_matrix, weights)) 
-                        # 仍保留一些修正以避免初始配置偏差太大
                         geo_ret_approx = p_ret - 0.5 * p_var
                         return geo_ret_approx - target_return
 
@@ -247,7 +251,6 @@ if st.sidebar.button('開始計算'):
                                    method='SLSQP', bounds=bounds, constraints=constraints)
                     
                     if not res.success:
-                         # 備用方案
                          constraints = [{'type': 'eq', 'fun': lambda x: np.sum(x) - 1},
                                         {'type': 'eq', 'fun': lambda x: np.sum(mean_returns * x) - target_return}]
                          res = minimize(min_variance, init_guess, args=(cov_matrix,), 
@@ -292,15 +295,13 @@ if st.sidebar.button('開始計算'):
                             fig.add_trace(go.Scatter(x=aligned_bench.index, y=aligned_bench, mode='lines', name=f'基準 ({bench_input})', line=dict(color='gray', width=2, dash='dash')))
                     st.plotly_chart(fig, use_container_width=True)
 
-                    # ★ 修改處：這裡改為計算「平均年報酬」
                     total_ret = margin_port_val.iloc[-1] - 1
-                    avg_annual_ret = calculate_avg_annual_ret(margin_port_val) # 使用新函數
+                    avg_annual_ret = calculate_avg_annual_ret(margin_port_val)
                     real_vol = calculate_vol(margin_port_val)
                     mdd = calculate_mdd(margin_port_val)
 
                     r1c1, r1c2 = st.columns(2)
                     r1c1.metric("總報酬率", f"{total_ret:,.2%}")
-                    # ★ 顯示修改
                     r1c2.metric("平均年報酬 (Avg Return)", f"{avg_annual_ret:.2%}")
                     
                     r2c1, r2c2 = st.columns(2)
@@ -371,11 +372,19 @@ if st.sidebar.button('開始計算'):
                 )
                 st.caption("註：最上方列為歷年平均報酬率。")
 
-                # 4. 滾動勝率
+                # 4. 滾動勝率 (★ 新增2年)
                 st.markdown("---")
                 st.subheader(f"📊 滾動持有勝率分析 ({strategy_name})")
                 
-                rolling_periods = {'3個月': 63, '6個月': 126, '1年': 252, '3年': 756, '5年': 1260, '10年': 2520}
+                rolling_periods = {
+                    '3個月': 63,
+                    '6個月': 126,
+                    '1年': 252,
+                    '2年': 504,
+                    '3年': 756,
+                    '5年': 1260,
+                    '10年': 2520
+                }
                 rolling_rows = []
 
                 def get_rolling_stats(series, name):
@@ -406,7 +415,7 @@ if st.sidebar.button('開始計算'):
                 st.dataframe(
                     df_roll.style.format({
                         '3個月': '{:.0%}', '6個月': '{:.0%}', '1年': '{:.0%}', 
-                        '3年': '{:.0%}', '5年': '{:.0%}', '10年': '{:.0%}'
+                        '2年': '{:.0%}', '3年': '{:.0%}', '5年': '{:.0%}', '10年': '{:.0%}'
                     })
                     .background_gradient(subset=list(rolling_periods.keys()), cmap='RdYlGn', vmin=0, vmax=1)
                 )
