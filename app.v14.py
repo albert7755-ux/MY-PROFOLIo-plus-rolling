@@ -9,9 +9,9 @@ import plotly.graph_objects as go
 
 # --- 1. 設定網頁標題 ---
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
-st.title('📈 智能投資組合優化器 (經典回歸版)')
+st.title('📈 智能投資組合優化器 (平均報酬版)')
 st.markdown("""
-此工具採用 **買入持有 (Buy & Hold)** 策略，讓強勢股自然增長，追求最大化長期複利效果。
+此工具採用 **買入持有 (Buy & Hold)** 策略，並顯示 **平均年報酬率 (Average Return)** 以供展示。
 """)
 
 # --- 2. 參數設定 ---
@@ -57,7 +57,6 @@ opt_method = st.sidebar.radio(
 
 target_return = 0.0
 if opt_method == "🎯 鎖定目標報酬 (積極)":
-    # 保留 V30 的 100% 上限
     target_return = st.sidebar.slider("您想要的年化報酬率 (CAGR)", 1.0, 100.0, 15.0, 0.5) / 100
     st.sidebar.caption("系統將計算初始最佳權重，後續採「買入持有」策略。")
 
@@ -181,13 +180,16 @@ if st.sidebar.button('開始計算'):
                     margin_equity = position_value - debt - interest_cost
                     return margin_equity
 
-                def calculate_cagr(series):
-                    days = (series.index[-1] - series.index[0]).days
-                    actual_years = days / 365.25
-                    if actual_years < 0.1: return 0 
-                    total_ret = series.iloc[-1]
-                    if total_ret <= 0: return -1
-                    return (total_ret)**(1/actual_years) - 1
+                # ★ 新增：計算平均年報酬 (Arithmetic Mean)
+                def calculate_avg_annual_ret(series):
+                    # 強制轉為 Series 並處理時區
+                    temp_series = series.copy()
+                    if temp_series.index.tz is not None:
+                        temp_series.index = temp_series.index.tz_localize(None)
+                    
+                    # 轉成年報酬
+                    ann_ret = temp_series.resample('Y').last().pct_change().dropna()
+                    return ann_ret.mean()
 
                 def calculate_vol(series):
                     daily_ret = series.pct_change().dropna()
@@ -253,8 +255,7 @@ if st.sidebar.button('開始計算'):
                     
                     optimal_weights = res.x
 
-                # ★ 回復：買入持有算法 (Buy & Hold)
-                # 這會導致權重隨股價波動而漂移，強勢股佔比會變大
+                # 買入持有算法
                 raw_port_val = (normalized_prices * optimal_weights).sum(axis=1) 
                 
                 # 融資計算
@@ -291,14 +292,16 @@ if st.sidebar.button('開始計算'):
                             fig.add_trace(go.Scatter(x=aligned_bench.index, y=aligned_bench, mode='lines', name=f'基準 ({bench_input})', line=dict(color='gray', width=2, dash='dash')))
                     st.plotly_chart(fig, use_container_width=True)
 
+                    # ★ 修改處：這裡改為計算「平均年報酬」
                     total_ret = margin_port_val.iloc[-1] - 1
-                    real_cagr = calculate_cagr(margin_port_val)
+                    avg_annual_ret = calculate_avg_annual_ret(margin_port_val) # 使用新函數
                     real_vol = calculate_vol(margin_port_val)
                     mdd = calculate_mdd(margin_port_val)
 
                     r1c1, r1c2 = st.columns(2)
                     r1c1.metric("總報酬率", f"{total_ret:,.2%}")
-                    r1c2.metric("年化報酬 (CAGR)", f"{real_cagr:.2%}")
+                    # ★ 顯示修改
+                    r1c2.metric("平均年報酬 (Avg Return)", f"{avg_annual_ret:.2%}")
                     
                     r2c1, r2c2 = st.columns(2)
                     r2c1.metric("年化波動", f"{real_vol:.2%}")
