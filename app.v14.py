@@ -11,14 +11,17 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="智能投資組合優化器", layout="wide")
 
 # ==========================================
-# ★ 新增功能：密碼保護系統
+# ★ 重點修正：密碼保護系統 (最優先執行)
 # ==========================================
-password = st.text_input("請輸入系統密碼：", type="password")
-if password != "5428":
-    st.info("🔒 請輸入正確密碼以解鎖進階回測功能。")
-    st.stop()  # 密碼錯誤則停止執行下方所有程式碼
+st.title('🔒 系統登入')
+password = st.text_input("🔑 請輸入系統密碼 (Access Code)", type="password")
 
-# --- 密碼正確後才會顯示以下內容 ---
+if password != "5428":
+    st.error("⛔ 密碼錯誤或尚未輸入。請輸入正確密碼 (5428) 以解鎖系統。")
+    st.stop()  # ★ 這裡會強制停止，直到密碼正確
+
+# --- 密碼正確後，才會顯示原本的標題與內容 ---
+st.markdown("---") # 分隔線
 st.title('📈 智能投資組合優化器 (VIP 專用版)')
 st.markdown("""
 此工具採用 **買入持有 (Buy & Hold)** 策略，並顯示 **平均年報酬率 (Average Return)** 以供展示。
@@ -48,7 +51,6 @@ if use_margin:
     loan_ratio = st.sidebar.slider("融資成數 (銀行借款比例)", 0.0, 0.9, 0.6, 0.1)
     margin_rate = st.sidebar.number_input("融資年利率 (%)", 2.0, 15.0, 6.0, 0.1) / 100
     self_fund_ratio = 1 - loan_ratio
-    # 避免分母為 0
     if self_fund_ratio <= 0.01: self_fund_ratio = 0.01
     leverage = 1 / self_fund_ratio
     st.sidebar.info(f"槓桿倍數：**{leverage:.1f} 倍**")
@@ -83,7 +85,7 @@ if st.sidebar.button('開始計算'):
                 end_date = datetime.today()
                 start_date = end_date - timedelta(days=365*years + 365) 
                 
-                # 1. 下載使用者投資組合
+                # 下載資料
                 data = yf.download(user_tickers, start=start_date, end=end_date, auto_adjust=True)
                 
                 if 'Close' in data.columns:
@@ -97,13 +99,12 @@ if st.sidebar.button('開始計算'):
                     st.error("無法抓取投資組合數據。")
                     st.stop()
                 
-                # 強制移除時區
                 if df_close.index.tz is not None:
                     df_close.index = df_close.index.tz_localize(None)
 
                 tickers = df_close.columns.tolist()
 
-                # 2. 下載與合成 Benchmark
+                # 下載 Benchmark
                 bench_config = []
                 try:
                     items = bench_input.strip().split()
@@ -271,7 +272,6 @@ if st.sidebar.button('開始計算'):
                 # C. 顯示區塊
                 # ==========================
                 
-                # 1. 配置與走勢
                 col_top1, col_top2 = st.columns([1, 2])
                 with col_top1:
                     st.subheader("📊 建議初始權重")
@@ -423,7 +423,9 @@ if st.sidebar.button('開始計算'):
             except Exception as e:
                 st.error(f"發生錯誤：{str(e)}")
 else:
-    st.info("請在左側輸入股票代號並按下「開始計算」")
+    # 這裡的文字只有在「密碼輸入正確」後才會顯示，但因為還沒按「開始計算」，所以提示使用者按按鈕
+    if password == "5428":
+        st.info("密碼驗證成功！請在左側輸入股票代號並按下「開始計算」")
 
 # --- 免責聲明 ---
 st.sidebar.markdown("---")
